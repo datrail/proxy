@@ -1,0 +1,4 @@
+# The test suite. Installed alongside requirements.txt in CI and never in the
+# image — the same rule requirements-dev.txt states for the linter.
+pytest==9.1.1
+pytest-asyncio==1.4.0

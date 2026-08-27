@@ -34,8 +34,13 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  publish:
+  # Resolved in its own job so the release can be gated on the suite: a
+  # job-level `uses:` reads another job's outputs, and cannot read a step's.
+  version:
     runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.resolve.outputs.tag }}
+      latest: ${{ steps.resolve.outputs.latest }}
     steps:
       # Resolve the version before anything is checked out or built, and refuse
       # anything that is not a release tag.
@@ -50,7 +55,7 @@ jobs:
       # The same guard covers the tag trigger: the `v*` glob also matches `v1`
       # and `vfoo`, which produce no semver tag but would still have moved
       # `latest`.
-      - id: version
+      - id: resolve
         env:
           RAW_REF: ${{ github.event.inputs.tag || github.ref_name }}
         run: |
@@ -68,9 +73,22 @@ jobs:
             echo "latest=true" >> "$GITHUB_OUTPUT"
           fi
 
+  # Publishing a version whose tests were never run is what this closes. The
+  # tag is checked out by name, so the suite runs against exactly what is
+  # about to be built rather than against whatever the run was launched from.
+  ci:
+    needs: version
+    uses: ./.github/workflows/ci.yml
+    with:
+      ref: ${{ needs.version.outputs.tag }}
+
+  publish:
+    needs: [version, ci]
+    runs-on: ubuntu-latest
+    steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ steps.version.outputs.tag }}
+          ref: ${{ needs.version.outputs.tag }}
           fetch-depth: 0
 
       # The commit the tag actually points at. `github.sha` is the ref the run
@@ -96,9 +114,9 @@ jobs:
           # `value=` pins every tag to the version resolved above, so a manual
           # dispatch tags what it built rather than what it was launched from.
           tags: |
-            type=semver,pattern={{version}},value=${{ steps.version.outputs.tag }}
-            type=semver,pattern={{major}}.{{minor}},value=${{ steps.version.outputs.tag }}
-            type=raw,value=latest,enable=${{ steps.version.outputs.latest == 'true' }}
+            type=semver,pattern={{version}},value=${{ needs.version.outputs.tag }}
+            type=semver,pattern={{major}}.{{minor}},value=${{ needs.version.outputs.tag }}
+            type=raw,value=latest,enable=${{ needs.version.outputs.latest == 'true' }}
           labels: |
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
             org.opencontainers.image.revision=${{ steps.commit.outputs.sha }}

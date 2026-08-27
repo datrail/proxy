@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import pathlib
 from typing import Any
 
 import httpx
@@ -21,9 +22,13 @@ def _upstream_handler(seen: list[dict[str, Any]]):
 
     def handler(request: httpx.Request) -> httpx.Response:
         body = json.loads(request.content) if request.content else {}
+        params = body.get("params") or {}
         seen.append(
             {
                 "method": body.get("method"),
+                "url": str(request.url),
+                "tool": params.get("name"),
+                "arguments": params.get("arguments"),
                 "headers": dict(request.headers),
                 "x-rail": request.headers.get("x-rail"),
                 "x-rail-status": request.headers.get("x-rail-status"),
@@ -107,15 +112,29 @@ def upstream(monkeypatch):
 
 
 @pytest.fixture
-def config(tmp_path, monkeypatch):
-    """A config file naming one upstream, as the proxy will read it."""
-    path = tmp_path / "bridge.yaml"
-    path.write_text(
-        "mcp:\n  servers:\n    - name: delivery\n      url: http://upstream.invalid/mcp\n",
-        encoding="utf-8",
-    )
-    monkeypatch.setenv("RAIL_PROXY_CONFIG_FILE", str(path))
-    from fastmcp_proxy import proxy as proxy_module
+def write_config(tmp_path, monkeypatch):
+    """Write a config file and point the proxy at it through the environment.
 
-    monkeypatch.setattr(proxy_module, "CONFIG_FILE", path)
-    return path
+    Only the environment — no attribute is patched. `config_file()` resolves
+    RAIL_PROXY_CONFIG_FILE per call, so patching a module attribute instead
+    would leave the variable that the image actually sets untested.
+    """
+
+    def write(body: str) -> pathlib.Path:
+        path = tmp_path / "bridge.yaml"
+        path.write_text(body, encoding="utf-8")
+        monkeypatch.setenv("RAIL_PROXY_CONFIG_FILE", str(path))
+        return path
+
+    return write
+
+
+ONE_UPSTREAM = (
+    "mcp:\n  servers:\n    - name: delivery\n      url: http://upstream.invalid/mcp\n"
+)
+
+
+@pytest.fixture
+def config(write_config):
+    """One upstream, named `delivery`."""
+    return write_config(ONE_UPSTREAM)

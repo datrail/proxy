@@ -5,6 +5,8 @@
 *
 !requirements.txt
 !fastmcp_proxy/
+!LICENSE
+!NOTICE
 
 # The runtime config is per deployment and mounted, never baked.
 fastmcp_proxy/bridge.yaml

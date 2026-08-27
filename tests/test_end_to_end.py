@@ -69,7 +69,86 @@ async def test_a_tool_call_is_forwarded_and_its_answer_returned(config, upstream
         result = await client.call_tool("delivery_echo", {"text": "hello"})
 
     assert result.content[0].text == "reached-the-upstream"
-    assert "tools/call" in [hit["method"] for hit in upstream]
+
+    calls = [hit for hit in upstream if hit["method"] == "tools/call"]
+    assert len(calls) == 1
+    # The namespace is added on the way in and stripped on the way out. Asserting
+    # only that a call happened would pass against a proxy forwarding
+    # `delivery_echo`, which no upstream would recognise.
+    assert calls[0]["tool"] == "echo"
+    assert calls[0]["arguments"] == {"text": "hello"}
+
+
+@pytest.mark.asyncio
+async def test_calls_go_to_the_configured_address(config, upstream):
+    """The stub answers any host and path, so without this nothing pins the url
+    from the config to the request that is actually made."""
+    async with running_proxy() as app, agent_client(app) as client:
+        await client.call_tool("delivery_echo", {"text": "hello"})
+
+    assert {hit["url"] for hit in upstream} == {"http://upstream.invalid/mcp"}
+
+
+@pytest.mark.asyncio
+async def test_the_namespace_is_the_configured_name(write_config, upstream):
+    """`delivery` is a value in a file, not a constant in the proxy. A second
+    name proves the prefix follows the config rather than a literal."""
+    write_config(
+        "mcp:\n  servers:\n    - name: billing\n      url: http://upstream.invalid/mcp\n"
+    )
+    async with running_proxy() as app, agent_client(app) as client:
+        tools = [t.name for t in await client.list_tools()]
+
+    assert tools == ["billing_echo"]
+
+
+@pytest.mark.asyncio
+async def test_every_configured_upstream_is_mounted(write_config, upstream):
+    """One entry is the deployed shape, so nothing else exercises the loop."""
+    write_config(
+        "mcp:\n  servers:\n"
+        "    - name: delivery\n      url: http://one.invalid/mcp\n"
+        "    - name: billing\n      url: http://two.invalid/mcp\n"
+    )
+    async with running_proxy() as app, agent_client(app) as client:
+        tools = sorted(t.name for t in await client.list_tools())
+
+    assert tools == ["billing_echo", "delivery_echo"]
+
+
+@pytest.mark.asyncio
+async def test_the_agents_own_headers_do_not_reach_the_upstream(config, upstream):
+    """The proxy is the identity boundary, and this is the case that makes it
+    one. `create_proxy` turns on incoming-header forwarding, so without the
+    switch being turned back off an agent sets `x-rail` itself and the upstream
+    receives it unchanged — an identity supplied by the caller it identifies.
+    `authorization` is forwarded by the same path."""
+    forged = {
+        "x-rail": "forged-by-the-sandbox",
+        "x-rail-status": "forged",
+        "authorization": "Bearer agent-secret",
+    }
+    async with running_proxy() as app:
+
+        def factory(**kwargs):
+            return httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app),
+                base_url="http://proxy.test",
+                **_client_kwargs(kwargs),
+            )
+
+        client = Client(
+            StreamableHttpTransport(
+                url="http://proxy.test/mcp/",
+                headers=forged,
+                httpx_client_factory=factory,
+            )
+        )
+        async with client:
+            await client.call_tool("delivery_echo", {"text": "hello"})
+
+    for name in forged:
+        assert {hit["headers"].get(name) for hit in upstream} == {None}, name
 
 
 @pytest.mark.asyncio
@@ -84,8 +163,22 @@ async def test_no_identity_header_is_attached(config, upstream):
     async with running_proxy() as app, agent_client(app) as client:
         await client.call_tool("delivery_echo", {"text": "hello"})
 
-    assert {hit["x-rail"] for hit in upstream} == {None}
-    assert {hit["x-rail-status"] for hit in upstream} == {None}
+    # Every header on the wire, not a two-name allowlist: a proxy that started
+    # attaching something else would otherwise pass this unchanged.
+    expected = {
+        "host",
+        "accept",
+        "accept-encoding",
+        "connection",
+        "user-agent",
+        "content-length",
+        "content-type",
+        "mcp-protocol-version",
+        "mcp-session-id",
+        "cache-control",
+    }
+    for hit in upstream:
+        assert set(hit["headers"]) <= expected, sorted(set(hit["headers"]) - expected)
 
 
 @pytest.mark.asyncio
@@ -108,8 +201,30 @@ async def test_get_on_the_mcp_path_is_refused_as_the_transport_requires(
         )
 
     assert no_session.status_code == 405
-    assert unknown_session.status_code == 405
     assert no_session.headers["allow"] == "POST"
+    # A session id that no session matches means the session ended, not that the
+    # stream is unavailable. Answering 405 would leave the client reusing it.
+    assert unknown_session.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_the_rewrite_does_not_reach_past_the_mcp_endpoint(config, upstream):
+    """`startswith("/mcp")` would also catch these, and `Allow: POST` on a route
+    that does not exist asserts that posting to it would work."""
+    async with (
+        running_proxy() as app,
+        httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://proxy.test"
+        ) as raw,
+    ):
+        statuses = {
+            path: (await raw.get(path, headers={"Accept": MCP_ACCEPT})).status_code
+            for path in ("/mcpfoo", "/mcp-admin", "/nope")
+        }
+        posted = await raw.post("/mcp", headers={"Accept": MCP_ACCEPT}, json={})
+
+    assert statuses == {"/mcpfoo": 404, "/mcp-admin": 404, "/nope": 404}
+    assert posted.status_code != 405
 
 
 @pytest.mark.asyncio

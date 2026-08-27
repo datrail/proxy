@@ -4,6 +4,15 @@ on:
   pull_request:
   push:
     branches: [master]
+  # Callable so a release can gate on it. Without this the only triggers are a
+  # pull request and a push to master, and a tag can sit on a commit that saw
+  # neither.
+  workflow_call:
+    inputs:
+      ref:
+        description: "Commit or tag to check. Defaults to the triggering ref."
+        required: false
+        type: string
 
 permissions:
   contents: read
@@ -13,6 +22,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.ref }}
 
       - uses: actions/setup-python@v5
         with:
@@ -31,6 +42,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.ref }}
 
       # Pinned to the interpreter the image ships (Dockerfile: python:3.12-slim).
       # There is no .python-version to read from, so if the Dockerfile moves,
@@ -49,14 +62,15 @@ jobs:
 
       - run: make test
 
-  # Without this the Dockerfile is first built by container-release.yml, on a
-  # tag — and a tag can sit on any commit, including one that never went through
-  # a pull request, so a broken build would surface only once the version it
-  # broke already exists.
+  # A build failure should surface on the pull request rather than on the tag
+  # that publishes it. container-release.yml calls this whole workflow before it
+  # pushes anything, so this job runs on both paths.
   image:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.ref }}
       - uses: docker/setup-buildx-action@v3
 
       # Build-only, amd64 only. The question here is "does it still build",
