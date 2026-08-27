@@ -1,0 +1,8 @@
+# Tooling. Never installed into the image — the Dockerfile installs
+# requirements.txt alone, and the linter has no business shipping to production.
+#
+# Pinned exactly, not `>=`: an unpinned linter goes red on someone else's
+# release day with nothing in this repo having changed. A pip requirements file
+# is also the form a Dependabot config can raise bumps against, which is why the
+# version lives here rather than inline in the workflow.
+ruff==0.16.1
