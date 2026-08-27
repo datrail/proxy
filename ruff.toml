@@ -1,0 +1,12 @@
+# Lint and format configuration. `make lint` and CI read this same file, so both
+# run the same rules with the same settings.
+#
+# Stock ruff rules. Curating a rule set is an argument every one of the datrail
+# components would have to have again; the default set is the one nobody has to
+# justify.
+
+# The lowest interpreter this project supports, not the one the image ships.
+# The target must track the floor: set it higher and `ruff check --fix` rewrites
+# working code into forms that only parse on the newer version, which CI running
+# a single newer interpreter never notices.
+target-version = "py310"
