@@ -1,0 +1,13 @@
+# Copy to bridge.yaml and point it at your upstream.
+#
+# Every other setting this proxy has is an environment variable — see the
+# README. This file holds the upstream list and nothing else, because a list of
+# objects is the one thing an environment variable cannot express.
+#
+# `name` is the mount namespace, so the agent sees the upstream's tools as
+# `<name>_<tool>`. Renaming it renames every tool.
+
+mcp:
+  servers:
+    - name: delivery
+      url: http://gateway:8080/mcp

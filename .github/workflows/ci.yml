@@ -26,3 +26,45 @@ jobs:
 
       # `ruff check` plus `ruff format --check`, per the Makefile.
       - run: make lint
+
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Pinned to the interpreter the image ships (Dockerfile: python:3.12-slim).
+      # There is no .python-version to read from, so if the Dockerfile moves,
+      # move this with it — otherwise the suite passes on a Python the image
+      # never runs.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      # requirements.txt carries pytest and pytest-asyncio, which pytest.ini's
+      # `asyncio_mode = strict` requires, so the runtime file is the whole test
+      # environment and the suite runs against the versions the image ships.
+      - run: pip install -r requirements.txt
+
+      - run: make test
+
+  # Without this the Dockerfile is first built by container-release.yml, on a
+  # tag — and a tag can sit on any commit, including one that never went through
+  # a pull request, so a broken build would surface only once the version it
+  # broke already exists.
+  image:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+
+      # Build-only, amd64 only. The question here is "does it still build",
+      # which the arm64 leg answers no differently — it would just spend several
+      # minutes doing it under emulation.
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: false
+          cache-from: type=gha,scope=ci-image
+          cache-to: type=gha,mode=max,scope=ci-image
