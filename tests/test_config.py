@@ -333,3 +333,48 @@ async def test_a_blank_port_falls_back_rather_than_failing_to_parse(
 
     assert await proxy_module.main() == 0
     assert captured["port"] == 8091
+
+
+def test_a_credential_in_an_upstream_url_is_not_logged(write_config, caplog):
+    """`user:pass@host` is how httpx is told to send Basic auth upstream, so a
+    credential there is a working configuration rather than a mistake — and the
+    mount line printed it on every start, into every log."""
+    write_config(
+        "mcp:\n  servers:\n    - name: delivery\n"
+        "      url: http://svc:s3cr3t@upstream.invalid/mcp\n"
+    )
+
+    with caplog.at_level("INFO"):
+        proxy_module.build_gateway()
+
+    logged = "\n".join(r.getMessage() for r in caplog.records)
+    assert "s3cr3t" not in logged
+    assert "upstream.invalid" in logged
+
+
+def test_an_entry_missing_a_key_is_announced_rather_than_dropped(write_config, caplog):
+    """`urls:` for `url:` removed an upstream with no record at any level, while
+    every other rejected setting in this module says so."""
+    write_config(
+        "mcp:\n  servers:\n"
+        "    - name: delivery\n      url: http://a.invalid/mcp\n"
+        "    - name: payments\n      urls: http://b.invalid/mcp\n"
+    )
+
+    with caplog.at_level("WARNING"):
+        assert [s["name"] for s in proxy_module.load_servers()] == ["delivery"]
+
+    assert any("payments" in r.getMessage() for r in caplog.records)
+
+
+def test_two_upstreams_cannot_share_a_namespace(write_config):
+    """The name is the prefix every tool carries, so a shared one shadows: the
+    loser is listed by nobody and called by nobody."""
+    write_config(
+        "mcp:\n  servers:\n"
+        "    - name: delivery\n      url: http://a.invalid/mcp\n"
+        "    - name: delivery\n      url: http://b.invalid/mcp\n"
+    )
+
+    with pytest.raises(proxy_module.ConfigError, match="duplicate upstream name"):
+        proxy_module.load_servers()

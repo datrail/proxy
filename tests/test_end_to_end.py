@@ -205,18 +205,18 @@ async def test_get_on_the_mcp_path_is_refused_as_the_transport_requires(
     ):
         no_session = await raw.get("/mcp", headers={"Accept": MCP_ACCEPT})
         trailing_slash = await raw.get("/mcp/", headers={"Accept": MCP_ACCEPT})
-        unknown_session = await raw.get(
-            "/mcp", headers={"Accept": MCP_ACCEPT, "mcp-session-id": "no-such"}
+        with_session = await raw.get(
+            "/mcp", headers={"Accept": MCP_ACCEPT, "mcp-session-id": "anything"}
         )
 
     assert no_session.status_code == 405
-    assert no_session.headers["allow"] == "POST, DELETE"
+    assert no_session.headers["allow"] == "POST"
     # `/mcp/` is the url a client is given. Forwarded, it redirects before any
     # status worth rewriting exists; answered here, it behaves like `/mcp`.
     assert trailing_slash.status_code == 405
-    # A session id that no session matches means the session ended, not that the
-    # stream is unavailable. Answering 405 would leave the client reusing it.
-    assert unknown_session.status_code == 404
+    # A session id changes nothing: the server is stateless, so there is no
+    # session for one to name.
+    assert with_session.status_code == 405
 
 
 @pytest.mark.asyncio
@@ -275,7 +275,7 @@ async def test_every_sessionless_method_is_answered_without_opening_a_session(
         response = await raw.request(method, "/mcp", headers={"Accept": MCP_ACCEPT})
 
     assert response.status_code == 405
-    assert response.headers["allow"] == "POST, DELETE"
+    assert response.headers["allow"] == "POST"
     assert response.headers["content-type"] == "application/json"
     # The response is hand-rolled ASGI, so its framing is this module's to get
     # right: a content-length that disagrees with the body is accepted by an
@@ -309,25 +309,33 @@ async def test_post_is_never_answered_here(config, upstream):
 
 
 @pytest.mark.asyncio
-async def test_a_session_id_passes_through_whatever_the_method(config, upstream):
-    """DELETE with a session id is how a client terminates its own session, and
-    a 404 for any method means the session has ended rather than that the method
-    is unavailable."""
+async def test_the_server_issues_no_session(config, upstream):
+    """Stateless is what keeps an unauthenticated POST from retaining a
+    transport nothing reclaims, so the absence of a session id on a real
+    exchange is the property worth pinning, not an incidental."""
     async with (
         running_proxy() as app,
         httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://proxy.test"
         ) as raw,
     ):
-        response = await raw.request(
-            "DELETE",
+        response = await raw.post(
             "/mcp",
-            headers={"Accept": MCP_ACCEPT, "mcp-session-id": "no-such"},
+            headers={"Accept": MCP_ACCEPT},
+            json={
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": {
+                    "protocolVersion": "2025-06-18",
+                    "capabilities": {},
+                    "clientInfo": {"name": "t", "version": "1"},
+                },
+            },
         )
 
-    # The docstring promises the session-ended answer, so assert it rather than
-    # merely that the shim kept its hands off.
-    assert response.status_code == 404
+    assert response.status_code == 200
+    assert "mcp-session-id" not in response.headers
 
 
 @pytest.mark.asyncio

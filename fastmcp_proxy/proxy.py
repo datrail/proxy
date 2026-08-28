@@ -15,6 +15,7 @@ import os
 import sys
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit, urlunsplit
 
 import yaml
 from fastmcp import Client, FastMCP
@@ -83,9 +84,29 @@ def load_servers() -> list[dict[str, Any]]:
             f"{path}: `mcp.servers` must be a list, not {type(entries).__name__}"
         )
 
-    servers = [
-        e for e in entries if isinstance(e, dict) and e.get("name") and e.get("url")
-    ]
+    servers = []
+    for entry in entries:
+        if isinstance(entry, dict) and entry.get("name") and entry.get("url"):
+            servers.append(entry)
+            continue
+        # Announced rather than dropped quietly: `urls:` for `url:` is a typo
+        # that otherwise removes an upstream with no record at any log level,
+        # and the file's other rejections all say so.
+        log.warning(
+            "%s: ignoring an entry without both a name and a url: %s",
+            path,
+            _clip(entry),
+        )
+
+    names = [e["name"] for e in servers]
+    duplicates = {n for n in names if names.count(n) > 1}
+    if duplicates:
+        # The name is the namespace every tool is prefixed with, so two entries
+        # sharing one shadow each other and the loser is never called.
+        raise ConfigError(
+            f"{path}: duplicate upstream name(s): {', '.join(sorted(duplicates))}"
+        )
+
     if not servers:
         raise ConfigError(f"{path} names no upstream with both a name and a url")
 
@@ -142,6 +163,26 @@ def upstream_timeout() -> float:
     return value
 
 
+def _clip(value: object, limit: int = 80) -> str:
+    """Render a rejected entry without letting a hostile config set the size of
+    the message it produces."""
+    text = repr(value)
+    return text if len(text) <= limit else text[:limit] + "…"
+
+
+def _redacted(url: str) -> str:
+    """A url safe to log. `user:pass@host` is how httpx is told to send Basic
+    auth to an upstream, so a credential there is a working configuration rather
+    than a mistake — and printing it on every start puts it in every log."""
+    parts = urlsplit(url)
+    if not parts.username:
+        return url
+    host = parts.hostname or ""
+    if parts.port:
+        host = f"{host}:{parts.port}"
+    return urlunsplit(parts._replace(netloc=f"***@{host}"))
+
+
 def build_gateway() -> FastMCP:
     """Mount every configured upstream under one endpoint.
 
@@ -174,7 +215,7 @@ def build_gateway() -> FastMCP:
         transport.forward_incoming_headers = False
 
         gateway.mount(proxy, namespace=srv["name"])
-        log.info("mounted '%s' -> %s", srv["name"], srv["url"])
+        log.info("mounted '%s' -> %s", srv["name"], _redacted(srv["url"]))
 
     @gateway.custom_route("/health", methods=["GET"])
     async def health(_request):
@@ -201,20 +242,15 @@ class McpMethodCompat:
     before any status worth rewriting exists.
 
     Answering also avoids allocating a session per request for these methods.
-    That is a saving, **not a protection**: POST must pass through, because it
-    is how a session is created, and an unauthenticated garbage POST allocates a
-    transport that is never reclaimed just the same. Bounding that is FastMCP's
-    to do — its session manager takes an idle timeout that `http_app()` does not
-    expose — and reaching into the manager to set it would couple this to
-    internals that change between releases. It is recorded as a limitation
-    rather than papered over, and it is one more thing that authenticating the
-    agent-to-proxy hop would close.
+    POST is the path that cannot be answered here, and `build_app` runs the
+    server stateless so that it allocates nothing either: without that an
+    unauthenticated garbage POST retained a transport that was never reclaimed,
+    2,000 of them taking the container from 84 to 170 MB.
     """
 
     _RESPONSE = (
         b'{"jsonrpc":"2.0","error":{"code":-32600,'
-        b'"message":"This endpoint accepts POST, and DELETE for a session it '
-        b'issued."},"id":null}'
+        b'"message":"This endpoint accepts POST."},"id":null}'
     )
 
     def __init__(self, app: ASGIApp) -> None:
@@ -222,29 +258,26 @@ class McpMethodCompat:
 
     @staticmethod
     def _answer_here(scope: Scope) -> bool:
-        """Anything at the MCP endpoint that opens no session and cannot use one.
+        """Anything at the MCP endpoint that is not the one method it serves.
 
-        POST is how a session is created, so it always passes through. Every
-        other method — GET for the stream, and HEAD, OPTIONS, PUT, DELETE,
-        PATCH — is answered here, because forwarding one makes FastMCP allocate
-        a transport before deciding to reject it, and nothing reclaims a
-        transport that never handshakes. Gating on GET alone left every other
-        verb leaking: 5,000 HEADs took the container from 61 to 267 MiB.
+        POST is how an MCP request is made, so it passes through. Every other
+        method is answered here rather than forwarded, because the answer is
+        the same 405 either way and forwarding one costs work on an endpoint an
+        untrusted sandbox can reach.
 
-        A request carrying a session id passes through whatever its method: a
-        404 then means the session has ended, and DELETE with one is how a
-        client terminates its own session.
+        There is no session-id exception, because the server is stateless and
+        there are no sessions to be carrying an id for. Under a stateful server
+        one would belong here: a 404 would then mean the session had ended, and
+        answering 405 would leave a client reusing a dead one.
 
         The path is matched exactly rather than by prefix: `startswith("/mcp")`
         also catches `/mcp-admin` and `/mcpfoo`, and answering those
         `405 Allow: …` asserts something about a route that does not exist.
         """
-        if scope["type"] != "http" or scope["method"] == "POST":
-            return False
-        if scope["path"] not in ("/mcp", "/mcp/"):
-            return False
-        return not any(
-            k.lower() == b"mcp-session-id" for k, _ in scope.get("headers", [])
+        return (
+            scope["type"] == "http"
+            and scope["method"] != "POST"
+            and scope["path"] in ("/mcp", "/mcp/")
         )
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
@@ -257,7 +290,7 @@ class McpMethodCompat:
                 "type": "http.response.start",
                 "status": 405,
                 "headers": [
-                    (b"allow", b"POST, DELETE"),
+                    (b"allow", b"POST"),
                     (b"content-type", b"application/json"),
                     (b"content-length", str(len(self._RESPONSE)).encode()),
                 ],
@@ -267,8 +300,19 @@ class McpMethodCompat:
 
 
 def build_app() -> ASGIApp:
-    """The ASGI application, wrapped in the compatibility shim."""
-    return McpMethodCompat(build_gateway().http_app(transport="streamable-http"))
+    """The ASGI application, wrapped in the compatibility shim.
+
+    Stateless, which is the honest declaration of what this already was. A
+    stateful server keeps a transport per session, and nothing reclaims one
+    whose client never handshakes — so an unauthenticated caller could retain
+    them until the process died, on the one endpoint an untrusted sandbox can
+    reach. Nothing is given up: the features the state exists for are the
+    server-to-client SSE stream, which the shim above declines outright, and
+    resumption, which needs an event store this does not configure.
+    """
+    return McpMethodCompat(
+        build_gateway().http_app(transport="streamable-http", stateless_http=True)
+    )
 
 
 #: uvicorn resolves a level by dict lookup and raises KeyError on a miss, so its
