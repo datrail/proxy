@@ -152,3 +152,62 @@ async def test_an_unusable_port_is_reported_rather_than_crashing(config, monkeyp
     monkeypatch.setenv("RAIL_PROXY_PORT", "8091x")
 
     assert await proxy_module.main() == 2
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        ("WARN", "WARNING"),
+        ("FATAL", "CRITICAL"),
+        ("NOTSET", "INFO"),
+        ("TRACE", "TRACE"),
+        ("debug", "DEBUG"),
+        ("", "INFO"),
+        ("not-a-level", "INFO"),
+    ],
+    ids=["warn-alias", "fatal-alias", "notset", "trace", "lowercase", "empty", "junk"],
+)
+def test_the_level_resolves_to_one_uvicorn_accepts(monkeypatch, value, expected):
+    """uvicorn resolves a level by dict lookup and raises KeyError on a miss.
+    `logging` accepts WARN, FATAL and NOTSET, so validating against `logging`
+    alone let those through and killed the server after startup had begun."""
+    monkeypatch.setenv("RAIL_PROXY_LOG_LEVEL", value)
+
+    assert proxy_module.log_level() == expected
+
+
+def test_every_resolvable_level_is_one_uvicorn_can_use():
+    """The guard this pins is that the two vocabularies stay reconciled: uvicorn
+    is the narrower, and nothing else in the suite exercises its leg."""
+    import uvicorn.config
+
+    for level in proxy_module._LEVELS:
+        assert level.lower() in uvicorn.config.LOG_LEVELS
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "port", ["0", "-1", "70000"], ids=["zero", "negative", "too-big"]
+)
+async def test_a_port_outside_the_range_is_reported(config, monkeypatch, port):
+    """bind() raises OverflowError past every handler; 0 binds an ephemeral port,
+    so the process comes up somewhere nothing is configured to look."""
+    monkeypatch.setenv("RAIL_PROXY_PORT", port)
+
+    assert await proxy_module.main() == 2
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [("", 30.0), ("5", 5.0), ("2.5", 2.5), ("0", 30.0), ("-1", 30.0), ("abc", 30.0)],
+    ids=["unset", "integer", "fractional", "zero", "negative", "junk"],
+)
+def test_the_upstream_timeout_falls_back_rather_than_disabling_itself(
+    monkeypatch, value, expected
+):
+    """Zero and negative are refused rather than honoured: a timeout of none is
+    how a hung upstream becomes an agent waiting forever, which is the state
+    this setting exists to bound."""
+    monkeypatch.setenv("RAIL_PROXY_UPSTREAM_TIMEOUT_SECONDS", value)
+
+    assert proxy_module.upstream_timeout() == expected

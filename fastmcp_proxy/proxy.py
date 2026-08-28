@@ -103,6 +103,26 @@ def load_servers() -> list[dict[str, Any]]:
     return servers
 
 
+def upstream_timeout() -> float:
+    """Seconds to wait on an upstream, for one request and for the handshake.
+
+    Without it a silent upstream costs a tool call the transport's 300-second
+    read default, twice over, and an upstream that answers malformedly hangs the
+    call indefinitely — the exchange completes and the wait moves to a protocol
+    layer with no deadline of its own. An agent has no way to tell either from a
+    slow tool.
+    """
+    raw = os.environ.get("RAIL_PROXY_UPSTREAM_TIMEOUT_SECONDS", "").strip()
+    if not raw:
+        return 30.0
+    try:
+        value = float(raw)
+    except ValueError:
+        log.warning("RAIL_PROXY_UPSTREAM_TIMEOUT_SECONDS=%r is not a number", raw)
+        return 30.0
+    return value if value > 0 else 30.0
+
+
 def build_gateway() -> FastMCP:
     """Mount every configured upstream under one endpoint.
 
@@ -113,8 +133,16 @@ def build_gateway() -> FastMCP:
     gateway = FastMCP(name="datrail-proxy")
 
     for srv in load_servers():
+        timeout = upstream_timeout()
         transport = StreamableHttpTransport(url=srv["url"])
-        proxy = create_proxy(Client(transport), name=f"proxy-{srv['name']}")
+        proxy = create_proxy(
+            Client(transport, timeout=timeout, init_timeout=timeout),
+            name=f"proxy-{srv['name']}",
+            # Default is "warn", which turns an unreachable upstream into an
+            # empty tool list — so an agent is told the tool does not exist
+            # rather than that the thing behind it is down, and does not retry.
+            provider_error_strategy="raise",
+        )
 
         # `create_proxy` turns on incoming-header forwarding, which is wrong for
         # this component in the one way that matters: the sandbox could set
@@ -223,17 +251,23 @@ def build_app() -> ASGIApp:
     return McpMethodCompat(build_gateway().http_app(transport="streamable-http"))
 
 
+#: uvicorn resolves a level by dict lookup and raises KeyError on a miss, so its
+#: vocabulary is the narrower of the two and the one to validate against.
+#: `logging` also accepts WARN, FATAL and NOTSET, which would pass a check
+#: against `logging` alone and then kill the server after the mount lines had
+#: already been logged — a configuration typo presenting as a startup failure.
+_LEVELS = {"CRITICAL", "ERROR", "WARNING", "INFO", "DEBUG", "TRACE"}
+_LEVEL_ALIASES = {"WARN": "WARNING", "FATAL": "CRITICAL"}
+
+
 def log_level() -> str:
-    """The configured level, or INFO. Empty is unset, as it is everywhere else."""
+    """The configured level, or INFO. Pure: it neither warns nor configures.
+
+    Empty is unset, as it is for the config path and the port.
+    """
     level = os.environ.get("RAIL_PROXY_LOG_LEVEL", "").strip().upper() or "INFO"
-    # `getLevelName` returns the number for a known name and the string
-    # "Level <name>" for anything else. `getLevelNamesMapping()` reads better
-    # and arrived in 3.11, above the floor this project supports and tests.
-    if not isinstance(logging.getLevelName(level), int):
-        logging.basicConfig(level="INFO", format=_LOG_FORMAT)
-        log.warning("RAIL_PROXY_LOG_LEVEL=%r is not a level; using INFO", level)
-        return "INFO"
-    return level
+    level = _LEVEL_ALIASES.get(level, level)
+    return level if level in _LEVELS else "INFO"
 
 
 def configure_logging() -> None:
@@ -242,7 +276,15 @@ def configure_logging() -> None:
     An unusable level is worth a complaint, not an exit: the proxy's job does
     not depend on it, and dying over a log setting loses the traffic too.
     """
-    logging.basicConfig(level=log_level(), format=_LOG_FORMAT)
+    resolved = log_level()
+    # TRACE is uvicorn's alone; `logging` has no such level, so the root logger
+    # takes the most verbose one it knows.
+    logging.basicConfig(
+        level="DEBUG" if resolved == "TRACE" else resolved, format=_LOG_FORMAT
+    )
+    raw = os.environ.get("RAIL_PROXY_LOG_LEVEL", "").strip()
+    if raw and raw.upper() not in _LEVELS and raw.upper() not in _LEVEL_ALIASES:
+        log.warning("RAIL_PROXY_LOG_LEVEL=%r is not a level; using INFO", raw)
 
 
 async def main() -> int:
@@ -262,13 +304,29 @@ async def main() -> int:
     except ValueError:
         log.error("RAIL_PROXY_PORT is not a number: %r", raw_port)
         return 2
+    # Reported rather than left to bind(), which raises OverflowError past every
+    # handler. 0 is excluded deliberately: it binds an ephemeral port, so the
+    # process comes up somewhere nothing is configured to look.
+    if not 1 <= port <= 65535:
+        log.error("RAIL_PROXY_PORT is out of range: %d", port)
+        return 2
 
     # uvicorn logs the bind once it has one. Announcing it here would name an
     # address the process may never get.
     # uvicorn installs its own loggers, so `basicConfig` alone leaves the access
     # log and the startup lines at INFO whatever the variable said.
     await uvicorn.Server(
-        uvicorn.Config(app, host=bind, port=port, log_level=log_level().lower())
+        uvicorn.Config(
+            app,
+            host=bind,
+            port=port,
+            log_level=log_level().lower(),
+            # Without this uvicorn stops immediately and an in-flight tool call
+            # is dropped with no response, leaving the agent waiting on an
+            # answer that will never come. A routine restart should not wedge
+            # the thing this proxy exists to serve.
+            timeout_graceful_shutdown=int(upstream_timeout()),
+        )
     ).serve()
     return 0
 
