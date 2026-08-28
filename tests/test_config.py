@@ -7,7 +7,6 @@ is that a hand-edited YAML file goes wrong in more shapes than an empty one.
 
 from __future__ import annotations
 
-import os
 import pathlib
 
 import pytest
@@ -251,4 +250,47 @@ def test_the_bind_address_is_stripped_like_every_other_setting(
     exited 3 through uvicorn rather than 2 with this module's own message."""
     monkeypatch.setenv("RAIL_PROXY_BIND", value)
 
-    assert (os.environ.get("RAIL_PROXY_BIND", "").strip() or "0.0.0.0") == expected
+    assert proxy_module.bind_address() == expected
+
+
+@pytest.mark.parametrize(
+    ("value", "warns"),
+    [("WARNING", False), ("WARN", False), ("", False), ("not-a-level", True)],
+    ids=["exact", "alias", "unset", "junk"],
+)
+def test_only_an_unusable_level_is_complained_about(monkeypatch, caplog, value, warns):
+    """An alias and an unset value are both handled rather than wrong, so
+    neither should produce a line an operator has to read past."""
+    # Root's handlers are left alone: caplog captures through one, so clearing
+    # them removes the very thing this asserts against.
+    monkeypatch.setenv("RAIL_PROXY_LOG_LEVEL", value)
+
+    with caplog.at_level("WARNING"):
+        proxy_module.configure_logging()
+
+    assert any("is not a level" in r.message for r in caplog.records) is warns
+
+
+@pytest.mark.asyncio
+async def test_the_bind_and_port_reach_uvicorn(config, monkeypatch):
+    """`bind_address()` and the port parse are pinned above; this pins that
+    `main` uses them. Reverting the call site to read the environment raw left
+    every one of those assertions green, because none of them touched `main`.
+    """
+    monkeypatch.setenv("RAIL_PROXY_BIND", "  127.0.0.1  ")
+    monkeypatch.setenv("RAIL_PROXY_PORT", " 9099 ")
+    captured: dict = {}
+
+    import uvicorn
+
+    class StubServer:
+        def __init__(self, config):
+            captured.update(host=config.host, port=config.port)
+
+        async def serve(self):
+            return None
+
+    monkeypatch.setattr(uvicorn, "Server", StubServer)
+
+    assert await proxy_module.main() == 0
+    assert captured == {"host": "127.0.0.1", "port": 9099}

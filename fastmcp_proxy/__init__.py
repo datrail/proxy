@@ -1,1 +1,1 @@
-"""DatRail proxy — attaches the x-rail ticket to an agent's outbound MCP calls."""
+"""DatRail proxy — receives an agent's MCP calls and forwards them upstream."""

@@ -1,4 +1,4 @@
-"""Shared fixtures: a recording upstream, and the proxy's app driven over ASGI."""
+"""Shared fixtures: a recording upstream, and the config the proxy reads."""
 
 from __future__ import annotations
 

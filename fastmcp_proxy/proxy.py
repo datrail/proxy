@@ -104,6 +104,13 @@ def load_servers() -> list[dict[str, Any]]:
     return servers
 
 
+def bind_address() -> str:
+    """The interface to listen on. Empty is unset, as it is for every other
+    setting — and a padded value would otherwise reach getaddrinfo and exit
+    through uvicorn rather than being reported here."""
+    return os.environ.get("RAIL_PROXY_BIND", "").strip() or "0.0.0.0"
+
+
 def upstream_timeout() -> float:
     """Seconds to wait on an upstream, for one request and for the handshake.
 
@@ -152,6 +159,11 @@ def build_gateway() -> FastMCP:
             name=f"proxy-{srv['name']}",
         )
 
+        # After `create_proxy`, not before: it mutates the transport it is
+        # handed, so setting this first is silently undone. The line reads like
+        # ordinary transport configuration and moving it up to the constructor
+        # is the natural tidy-up, which is why the order is stated here.
+        #
         # `create_proxy` turns on incoming-header forwarding, which is wrong for
         # this component in the one way that matters: the sandbox could set
         # `x-rail` itself and have it arrive upstream unchanged, so the identity
@@ -165,7 +177,7 @@ def build_gateway() -> FastMCP:
         log.info("mounted '%s' -> %s", srv["name"], srv["url"])
 
     @gateway.custom_route("/health", methods=["GET"])
-    async def health(_request):  # pragma: no cover - exercised over HTTP
+    async def health(_request):
         """Liveness only: the process is up and its config parsed.
 
         It reports nothing about whether a ticket is held, because no ticket
@@ -305,7 +317,7 @@ async def main() -> int:
         log.error("%s", exc)
         return 2
 
-    bind = os.environ.get("RAIL_PROXY_BIND", "").strip() or "0.0.0.0"
+    bind = bind_address()
     raw_port = os.environ.get("RAIL_PROXY_PORT", "").strip() or "8091"
     try:
         port = int(raw_port)
@@ -334,8 +346,11 @@ async def main() -> int:
             # thing that cuts them off. It would not help anyway — every MCP
             # response is server-sent events, and sse_starlette patches
             # uvicorn's exit handler to abort those bodies before any grace
-            # period applies, so SIGTERM mid-call leaves the agent without a
-            # response either way. Bounding that is the client's timeout, above.
+            # applies, so SIGTERM mid-call leaves the agent without a response
+            # whatever is set here. Nothing in this process bounds that wait:
+            # the upstream timeout governs the call this proxy makes, not the
+            # one an agent is making to it. A restart mid-call is the agent's
+            # own deadline to survive.
         )
     ).serve()
     return 0

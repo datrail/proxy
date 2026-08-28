@@ -1,6 +1,6 @@
 """The seam: a call arrives over HTTP, is forwarded, and the answer comes back.
 
-Every other test in this repository exercises a function. This one drives the
+The other tests in this repository exercise a function. This one drives the
 real ASGI application the container serves, through a real MCP client, to an
 upstream that records what it received — so it is the only place that can catch
 the mount, the transport and the request path disagreeing with each other.
@@ -9,6 +9,7 @@ the mount, the transport and the request path disagreeing with each other.
 from __future__ import annotations
 
 import contextlib
+import json
 
 import httpx
 import pytest
@@ -16,6 +17,7 @@ from fastmcp import Client
 from fastmcp.client.transports import StreamableHttpTransport
 
 from fastmcp_proxy import proxy as proxy_module
+from fastmcp_proxy.proxy import McpMethodCompat
 from tests.conftest import MCP_ACCEPT, _client_kwargs
 
 
@@ -24,8 +26,11 @@ async def running_proxy():
     """The proxy's own app, served in-process.
 
     `ASGITransport` does not run the lifespan, and FastMCP's session manager is
-    started there — without entering it by hand every request fails on a
-    manager that was never started.
+    started there — without entering it by hand every request fails on a manager
+    that was never started. It is entered on the inner app because the manager's
+    task group is bound to the task that opens it; the middleware's own handling
+    of a lifespan scope is pinned separately, in
+    `test_a_lifespan_scope_is_passed_through_untouched`.
     """
     app = proxy_module.build_app()
     inner = app.app
@@ -52,7 +57,7 @@ def agent_client(app) -> Client:
 
 @pytest.mark.asyncio
 async def test_the_upstreams_tools_reach_the_agent_namespaced(config, upstream):
-    """Feature 1 and 4's first half: the agent sees what the upstream offers,
+    """The agent sees what the upstream offers,
     under the mount's name. The prefix is a contract, not a formatting detail —
     it is the string an agent is prompted with — and the suffix is the stub's
     tool, named after the host it was dialled at."""
@@ -271,6 +276,13 @@ async def test_every_sessionless_method_is_answered_without_opening_a_session(
 
     assert response.status_code == 405
     assert response.headers["allow"] == "POST, DELETE"
+    assert response.headers["content-type"] == "application/json"
+    # The response is hand-rolled ASGI, so its framing is this module's to get
+    # right: a content-length that disagrees with the body is accepted by an
+    # in-process transport and raises RuntimeError under a real server.
+    body = json.loads(McpMethodCompat._RESPONSE)
+    assert int(response.headers["content-length"]) == len(McpMethodCompat._RESPONSE)
+    assert body["error"]["code"] == -32600
     if method != "HEAD":
         assert "accepts POST" in response.text
 
@@ -312,3 +324,52 @@ async def test_a_session_id_passes_through_whatever_the_method(config, upstream)
     # The docstring promises the session-ended answer, so assert it rather than
     # merely that the shim kept its hands off.
     assert response.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_a_lifespan_scope_is_passed_through_untouched():
+    """The one scope a server always sends that is not a request.
+
+    Handled wrongly, FastMCP's session manager never starts and every MCP call
+    fails while `/health` still answers 200 — a server that looks up and serves
+    nothing. The main harness cannot see this: it enters the lifespan on the
+    inner app, so the scope never travels through the wrapper.
+    """
+    seen: list[str] = []
+
+    async def inner(scope, _receive, _send):
+        seen.append(scope["type"])
+
+    async def receive():
+        return {"type": "lifespan.startup"}
+
+    async def send(_message):
+        raise AssertionError("the middleware answered a lifespan scope itself")
+
+    await McpMethodCompat(inner)({"type": "lifespan"}, receive, send)
+
+    assert seen == ["lifespan"]
+
+
+@pytest.mark.asyncio
+async def test_the_upstream_timeout_reaches_the_client(config, upstream, monkeypatch):
+    """Eight cases pin `upstream_timeout()`; none pinned that its value is used.
+    Dropping the argument, dropping `init_timeout`, or hardcoding a number all
+    left the suite green — and an absent timeout is the only failure mode the
+    setting exists to prevent.
+
+    Asserted at the module's own symbol rather than by walking FastMCP's
+    provider tree, which is private and has already moved once.
+    """
+    monkeypatch.setenv("RAIL_PROXY_UPSTREAM_TIMEOUT_SECONDS", "7")
+    captured: list[dict] = []
+    original = proxy_module.Client
+
+    def recording_client(transport, **kwargs):
+        captured.append(kwargs)
+        return original(transport, **kwargs)
+
+    monkeypatch.setattr(proxy_module, "Client", recording_client)
+    proxy_module.build_gateway()
+
+    assert captured == [{"timeout": 7.0, "init_timeout": 7.0}]
