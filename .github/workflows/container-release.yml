@@ -147,17 +147,15 @@ jobs:
       # Signed, verifiable statement that this digest came from this workflow:
       # `gh attestation verify oci://ghcr.io/<owner>/<repo>:<tag> --owner <org>`.
       #
-      # This does not work yet, and cannot until DR-25. Artifact attestations
-      # cover private repositories only on GitHub Enterprise Cloud; on Free, Pro
-      # and Team they are a public-repository feature, and datrail is a free org
-      # whose repos are all private. Making the repos public is the route in —
-      # a paid plan short of Enterprise Cloud would not buy it.
+      # Attestations cover private repositories only on GitHub Enterprise
+      # Cloud; on Free, Pro and Team they are a public-repository feature. A
+      # private repository on a free org therefore cannot produce one, and no
+      # paid plan short of Enterprise Cloud changes that.
       #
       # The image is already pushed by the time this runs, so a hard failure
-      # would mark a successful publish as failed; it warns instead, and starts
-      # working on its own once the repos are flipped. This swallows every
-      # failure of the step, not only the plan one — the warning is the only
-      # signal either way.
+      # would mark a successful publish as failed; it warns instead. This
+      # swallows every failure of the step, not only the plan one — the warning
+      # is the only signal either way.
       #
       # The provenance this generates records the workflow run's own ref, so a
       # workflow_dispatch republish attests the dispatch context rather than the
@@ -172,7 +170,7 @@ jobs:
           push-to-registry: true
 
       - if: steps.attest.outcome == 'failure'
-        run: echo "::warning::Image published without a provenance attestation — private repo on a plan that does not include them (DR-25 flips these public)."
+        run: echo "::warning::Image published without a provenance attestation — attestations need a public repository, or GitHub Enterprise Cloud."
 
       # Values reach the shell through env, never through `${{ }}` inside run:,
       # which is substituted as raw text before bash sees it.

@@ -1,11 +1,39 @@
 # Copy to bridge.yaml and point it at your upstream.
 #
-# Every other setting this proxy has is an environment variable:
-# RAIL_PROXY_CONFIG_FILE (this file's path), RAIL_PROXY_BIND, RAIL_PROXY_PORT,
-# RAIL_PROXY_LOG_LEVEL and RAIL_PROXY_UPSTREAM_TIMEOUT_SECONDS, which bounds how
-# long a call waits on an upstream before the agent is told it timed out.
-# This file holds the upstream list and nothing else, because a list of
-# objects is the one thing an environment variable cannot express.
+# This file holds the upstream list and nothing else, because a list of objects
+# is the one thing an environment variable cannot express. Every other setting
+# is an environment variable, and the defaults are in brackets:
+#
+#   RAIL_PROXY_CONFIG_FILE   this file's path        (fastmcp_proxy/bridge.yaml,
+#                            which nothing ships — mount or write one)
+#   RAIL_PROXY_BIND          interface to listen on  (0.0.0.0)
+#   RAIL_PROXY_PORT          port to listen on       (8091)
+#   RAIL_PROXY_LOG_LEVEL                             (INFO)
+#   RAIL_PROXY_UPSTREAM_TIMEOUT_SECONDS              (30)
+#       How long a call waits on an upstream before the agent is told it timed
+#       out.
+#
+# Where a Rail Center issues this proxy a ticket, three name it — all three
+# together, or none:
+#
+#   RAIL_CENTER_URL          e.g. https://rail-center.example.com
+#   RAIL_HOST_ID             the host this proxy runs on
+#   RAIL_SANDBOX_NAME        the agent sandbox it serves
+#
+# and five more govern how it is fetched. `RAIL_AUTH_TOKEN` is required under
+# `RAIL_AUTH_MODE=bearer` and ignored otherwise, and the override below does
+# nothing unless a credential exists to send:
+#
+#   RAIL_AUTH_MODE           none | bearer            (none)
+#   RAIL_AUTH_TOKEN          no default; `bearer` without one is refused
+#   RAIL_PROXY_TICKET_TIMEOUT_SECONDS                (10)
+#       Bounds the startup fetch, which runs before the port is bound — so it
+#       also bounds how long an unreachable Rail Center delays that.
+#   RAIL_PROXY_MAX_TICKET_LIFETIME_SECONDS           (no bound)
+#       Refuse a ticket claiming a longer life than this.
+#   RAIL_PROXY_ALLOW_INSECURE_CREDENTIAL             (false)
+#       Send the credential to a plaintext, non-loopback Rail Center anyway.
+#       Refused by default; SECURITY.md says what that refusal is for.
 #
 # `name` is the mount namespace, so the agent sees the upstream's tools as
 # `<name>_<tool>`. Renaming it renames every tool.

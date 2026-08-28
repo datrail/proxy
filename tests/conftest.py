@@ -142,6 +142,36 @@ def write_config(tmp_path, monkeypatch):
     return write
 
 
+#: Every variable the package reads. Autouse rather than opt-in, and the whole
+#: set rather than the ticket half: a value left in the shell — `RAIL_HOST_ID`
+#: alone makes `main()` exit 2 on a partly-configured control plane,
+#: `RAIL_PROXY_PORT=junk` makes it exit 2 on the port — fails tests that never
+#: mention either, somewhere that names none of this. `RAIL_PROXY_PORT` is one
+#: the image itself sets.
+_RAIL_ENVIRONMENT = (
+    "RAIL_CENTER_URL",
+    "RAIL_HOST_ID",
+    "RAIL_SANDBOX_NAME",
+    "RAIL_AUTH_MODE",
+    "RAIL_AUTH_TOKEN",
+    "RAIL_PROXY_TICKET_TIMEOUT_SECONDS",
+    "RAIL_PROXY_MAX_TICKET_LIFETIME_SECONDS",
+    "RAIL_PROXY_ALLOW_INSECURE_CREDENTIAL",
+    "RAIL_PROXY_BIND",
+    "RAIL_PROXY_PORT",
+    "RAIL_PROXY_LOG_LEVEL",
+    "RAIL_PROXY_UPSTREAM_TIMEOUT_SECONDS",
+    "RAIL_PROXY_CONFIG_FILE",
+)
+
+
+@pytest.fixture(autouse=True)
+def no_rail_center(monkeypatch):
+    """A clean slate for every test in the package."""
+    for name in _RAIL_ENVIRONMENT:
+        monkeypatch.delenv(name, raising=False)
+
+
 ONE_UPSTREAM = (
     "mcp:\n  servers:\n    - name: delivery\n      url: http://upstream.invalid/mcp\n"
 )

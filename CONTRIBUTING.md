@@ -1,10 +1,23 @@
 # Contributing to the DatRail proxy
 
-The proxy sits in front of an agent's outbound MCP calls. It is the boundary at which the `x-rail` ticket the rest of DatRail relies on is attached, so that the sandbox never holds the credential identifying it — today it forwards calls and refuses to carry a ticket the agent supplies; issuing and attaching one is not implemented yet.
+The proxy sits in front of an agent's outbound MCP calls, and keeps the credential identifying that agent out of the sandbox. [README.md](README.md) says what it does; [SECURITY.md](SECURITY.md) says where the sharp edges are, and reading that one first will save you a rejected pull request.
 
 ## Before you write code
 
-Open an issue first for anything beyond an obvious fix. Anything touching how a ticket is attached, or which agent a call is attributed to, should be discussed before it is written — that logic is what every downstream decision trusts.
+Open an issue first for anything beyond an obvious fix. Anything touching which agent a call is attributed to should be discussed before it is written — that logic is what every downstream decision trusts.
+
+## Running it
+
+```
+pip install -r requirements.txt -r requirements-test.txt -r requirements-dev.txt
+cp fastmcp_proxy/bridge.yaml.example fastmcp_proxy/bridge.yaml   # then edit it
+python -m fastmcp_proxy.proxy
+```
+
+`make test` runs the suite and `make lint` the linter; CI runs both. The proxy
+listens on `0.0.0.0:8091` by default, serving `POST /mcp` and `GET /health`.
+Every setting is an environment variable, listed in
+[bridge.yaml.example](fastmcp_proxy/bridge.yaml.example).
 
 ## The rule that is not negotiable
 

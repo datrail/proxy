@@ -9,8 +9,10 @@ fastmcp==3.4.6
 pyyaml==6.0.1
 uvicorn[standard]==0.52.1
 
-# Imported directly by fastmcp_proxy.proxy for JSONResponse and the ASGI types.
-# It arrives transitively through fastmcp as well, but a module that imports a
+# Imported directly: starlette by fastmcp_proxy.proxy for JSONResponse and the
+# ASGI types, httpx by fastmcp_proxy.xrail_auth for the ticket fetch. Both
+# arrive transitively through fastmcp as well, but a module that imports a
 # package names it: the transitive path is three levels deep and held in place
 # by nothing this repository controls.
 starlette==1.4.1
+httpx==0.28.1

@@ -1,14 +1,15 @@
 # Security Policy
 
-The DatRail proxy sits in front of an agent's MCP traffic. It is the boundary at
-which the **`x-rail` ticket** everything downstream trusts is attached — a
-mechanism that is **not implemented yet**: today the proxy forwards calls and
-attaches nothing, and strips a ticket an agent tries to supply.
+The DatRail proxy sits in front of an agent's MCP traffic. It is the boundary
+that keeps the **`x-rail` ticket** everything downstream trusts out of the
+sandbox: it forwards calls to the upstreams its config names, forwards none of
+the agent's own headers, and — where a Rail Center is configured — fetches its
+own ticket at startup. Attaching a ticket to an outbound request is not part of
+this repository.
 
-Two things will be able to go wrong once it does. A call can arrive wearing the
-wrong identity, so the gateway enforces the wrong policy on it and the audit
-trail records the wrong agent. Or the ticket itself can escape, and a ticket is
-a bearer credential for as long as it lives.
+Two things are worth attacking here. A call can end up attributed to an agent it
+did not come from, so the gateway enforces the wrong policy on it and the audit
+trail records the wrong agent. Or a ticket can escape.
 
 ## Reporting a vulnerability
 
@@ -35,15 +36,20 @@ quiet.
 ## Where the sharp edges are
 
 - **The identity boundary.** The proxy must not carry an identity the agent
-  gave it. It strips `x-rail` and `authorization` on the way out for that
-  reason; anything that gets one of them past the boundary defeats the whole
-  chain and would show up nowhere in the logs as an error. This is the most
-  valuable thing to attack and the most valuable thing to report. Ticket
-  attribution proper — deciding which agent a call belongs to — arrives with
-  the mechanism above.
+  gave it. No header the agent supplies is forwarded — every one, not a list of
+  names — and anything that gets one past the boundary defeats the whole chain
+  and would show up nowhere in the logs as an error. This is the most valuable
+  thing to attack and the most valuable thing to report.
 - **Ticket handling.** A ticket is a bearer credential for its lifetime. It must
   not reach a log, an error message, a crash dump, or an upstream that did not
-  need it.
+  need it. The startup fetch logs a digest prefix and never the value.
+- **The control-plane fetch.** It carries a credential out and a ticket back,
+  so it refuses to send one over plaintext to anything but loopback, reads no
+  ambient proxy setting, caps and refuses to decompress what comes back, and
+  bounds the whole exchange — that fetch runs before the listener binds.
+  `RAIL_PROXY_ALLOW_INSECURE_CREDENTIAL` turns the first of those off. A
+  deployment that sets it is making a choice, not hitting a bug; a way *past*
+  the refusal without it is a report.
 
 ## Scope
 
