@@ -246,8 +246,9 @@ def test_the_upstream_timeout_falls_back_rather_than_disabling_itself(
 def test_the_bind_address_is_stripped_like_every_other_setting(
     monkeypatch, value, expected
 ):
-    """It was the one variable read raw. A padded value reached getaddrinfo and
-    exited 3 through uvicorn rather than 2 with this module's own message."""
+    """It was the one variable read raw, so a padded value reached getaddrinfo
+    and died inside uvicorn. Nothing validates a bind address beyond this — a
+    genuinely bad host still fails there, which is uvicorn's to report."""
     monkeypatch.setenv("RAIL_PROXY_BIND", value)
 
     assert proxy_module.bind_address() == expected
@@ -335,21 +336,49 @@ async def test_a_blank_port_falls_back_rather_than_failing_to_parse(
     assert captured["port"] == 8091
 
 
-def test_a_credential_in_an_upstream_url_is_not_logged(write_config, caplog):
-    """`user:pass@host` is how httpx is told to send Basic auth upstream, so a
-    credential there is a working configuration rather than a mistake — and the
-    mount line printed it on every start, into every log."""
-    write_config(
-        "mcp:\n  servers:\n    - name: delivery\n"
-        "      url: http://svc:s3cr3t@upstream.invalid/mcp\n"
+@pytest.mark.parametrize(
+    ("message", "expected"),
+    [
+        (
+            "HTTP Request: POST http://svc:s3cr3t@upstream.invalid/mcp",
+            "HTTP Request: POST http://***@upstream.invalid/mcp",
+        ),
+        # No username, only a password: httpx sends `Basic OnMzY3JldA==` for
+        # this, so it is a working credential and not junk.
+        (
+            "mounted 'd' -> https://:s3cr3t@upstream.invalid/mcp",
+            "mounted 'd' -> https://***@upstream.invalid/mcp",
+        ),
+        (
+            "http://user:pw@[::1]:8080/mcp",
+            "http://***@[::1]:8080/mcp",
+        ),
+        # Nothing to redact must survive untouched.
+        (
+            "mounted 'd' -> http://upstream.invalid/mcp",
+            "mounted 'd' -> http://upstream.invalid/mcp",
+        ),
+        ("an email addr@example.com in prose", "an email addr@example.com in prose"),
+    ],
+    ids=["httpx-line", "password-only", "ipv6", "no-credential", "not-a-url"],
+)
+def test_a_credential_in_a_url_is_redacted_from_any_message(message, expected):
+    """Redacting where this module formats a url is not enough. httpx logs the
+    full url once per request at INFO, so a single tool call put the password in
+    the log sixteen times — the leak is at request rate, not at startup."""
+    assert proxy_module._redact(message) == expected
+
+
+def test_the_redaction_reaches_records_this_module_did_not_emit(caplog, monkeypatch):
+    """The filter is what covers httpx, which is the logger that leaks."""
+    monkeypatch.setenv("RAIL_PROXY_LOG_LEVEL", "INFO")
+    proxy_module.configure_logging()
+
+    handlers = [h for h in proxy_module.logging.root.handlers]
+    assert handlers, "configure_logging installed no handler to filter on"
+    assert any(
+        isinstance(f, proxy_module.RedactingFilter) for h in handlers for f in h.filters
     )
-
-    with caplog.at_level("INFO"):
-        proxy_module.build_gateway()
-
-    logged = "\n".join(r.getMessage() for r in caplog.records)
-    assert "s3cr3t" not in logged
-    assert "upstream.invalid" in logged
 
 
 def test_an_entry_missing_a_key_is_announced_rather_than_dropped(write_config, caplog):

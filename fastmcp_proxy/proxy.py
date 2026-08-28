@@ -1,9 +1,12 @@
-"""Receive MCP calls from an agent and forward them to a configured upstream.
+"""Receive MCP calls from an agent and forward them to its configured upstreams.
 
-The proxy is a sidecar: one process serves one agent, mounting the upstream
-named in its config file and re-exposing that upstream's tools under a
-namespace. Attaching the `x-rail` ticket is the point of the component and is
-not implemented here — this module is the path a request travels.
+The proxy is a sidecar: one process serves one agent, mounting the upstreams
+named in its config file and re-exposing their tools under a namespace.
+
+Attaching the `x-rail` ticket is the point of the component and is not
+implemented here — this module is the path a request travels. What it does
+enforce is the boundary that makes attaching one meaningful later: no header
+the agent supplies reaches an upstream.
 """
 
 from __future__ import annotations
@@ -12,10 +15,10 @@ import asyncio
 import logging
 import math
 import os
+import re
 import sys
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlsplit, urlunsplit
 
 import yaml
 from fastmcp import Client, FastMCP
@@ -98,7 +101,7 @@ def load_servers() -> list[dict[str, Any]]:
             _clip(entry),
         )
 
-    names = [e["name"] for e in servers]
+    names = [str(e["name"]) for e in servers]
     duplicates = {n for n in names if names.count(n) > 1}
     if duplicates:
         # The name is the namespace every tool is prefixed with, so two entries
@@ -127,8 +130,9 @@ def load_servers() -> list[dict[str, Any]]:
 
 def bind_address() -> str:
     """The interface to listen on. Empty is unset, as it is for every other
-    setting — and a padded value would otherwise reach getaddrinfo and exit
-    through uvicorn rather than being reported here."""
+    setting; a padded value would otherwise reach getaddrinfo and die inside
+    uvicorn. An address that is wrong rather than merely padded still fails
+    there — nothing here validates one."""
     return os.environ.get("RAIL_PROXY_BIND", "").strip() or "0.0.0.0"
 
 
@@ -170,17 +174,32 @@ def _clip(value: object, limit: int = 80) -> str:
     return text if len(text) <= limit else text[:limit] + "…"
 
 
-def _redacted(url: str) -> str:
-    """A url safe to log. `user:pass@host` is how httpx is told to send Basic
-    auth to an upstream, so a credential there is a working configuration rather
-    than a mistake — and printing it on every start puts it in every log."""
-    parts = urlsplit(url)
-    if not parts.username:
-        return url
-    host = parts.hostname or ""
-    if parts.port:
-        host = f"{host}:{parts.port}"
-    return urlunsplit(parts._replace(netloc=f"***@{host}"))
+#: `scheme://` then anything up to the last `@` of an authority. Matched on the
+#: rendered message rather than on a url object, because the messages that carry
+#: a credential are written by libraries that never hand one over — httpx logs
+#: `HTTP Request: POST <url>` at INFO, once per request.
+_USERINFO = re.compile(r"(?P<scheme>[a-zA-Z][\w+.-]*://)[^/\s@]*@")
+
+
+def _redact(text: str) -> str:
+    """Remove userinfo from any url in a log message.
+
+    `user:pass@host` is how httpx is told to send Basic auth to an upstream, so
+    a credential there is a working configuration rather than a mistake.
+    Redacting only where this module formats a url is not enough: httpx logs the
+    full url on every request, so one tool call put the password in the log
+    sixteen times.
+    """
+    return _USERINFO.sub(r"\g<scheme>***@", text)
+
+
+class RedactingFilter(logging.Filter):
+    """Applies `_redact` to every record, whoever emitted it."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        record.msg = _redact(record.getMessage())
+        record.args = ()
+        return True
 
 
 def build_gateway() -> FastMCP:
@@ -215,7 +234,7 @@ def build_gateway() -> FastMCP:
         transport.forward_incoming_headers = False
 
         gateway.mount(proxy, namespace=srv["name"])
-        log.info("mounted '%s' -> %s", srv["name"], _redacted(srv["url"]))
+        log.info("mounted '%s' -> %s", srv["name"], srv["url"])
 
     @gateway.custom_route("/health", methods=["GET"])
     async def health(_request):
@@ -231,21 +250,17 @@ def build_gateway() -> FastMCP:
 
 
 class McpMethodCompat:
-    """Answer 405 to methods the MCP endpoint does not serve.
+    """Answer everything but POST at the MCP endpoint.
 
     A server that does not offer the optional server-to-client SSE stream must
-    refuse `GET /mcp` with `405 Method Not Allowed`; a client then skips the
-    stream and carries on. FastMCP answers 400 or 404 instead, and a client
-    following the transport spec treats anything but 405 as fatal — so without
-    this the session ends before the first tool call. Answering here rather than
-    rewriting a forwarded status also covers `/mcp/`, which redirects with a 307
-    before any status worth rewriting exists.
-
-    Answering also avoids allocating a session per request for these methods.
-    POST is the path that cannot be answered here, and `build_app` runs the
-    server stateless so that it allocates nothing either: without that an
-    unauthenticated garbage POST retained a transport that was never reclaimed,
-    2,000 of them taking the container from 84 to 170 MB.
+    refuse `GET /mcp` with `405 Method Not Allowed`, and a client following the
+    transport spec treats anything else as fatal. The stateless app underneath
+    already answers 405, so this is not rescuing the handshake — it does three
+    smaller things the app does not. `Allow` is narrowed to `POST`, where the
+    app advertises `DELETE` as well and has no session to terminate. `/mcp/`
+    answers 405 rather than redirecting with a 307 a client is not expecting.
+    And the request is answered here rather than routed, on an endpoint an
+    untrusted sandbox can reach.
     """
 
     _RESPONSE = (
@@ -346,6 +361,10 @@ def configure_logging() -> None:
     logging.basicConfig(
         level="DEBUG" if resolved == "TRACE" else resolved, format=_LOG_FORMAT
     )
+    # On the handlers rather than on a logger: a filter on a logger does not see
+    # records propagated from its children, and httpx is the one that leaks.
+    for handler in logging.root.handlers:
+        handler.addFilter(RedactingFilter())
     raw = os.environ.get("RAIL_PROXY_LOG_LEVEL", "").strip()
     if raw and raw.upper() not in _LEVELS and raw.upper() not in _LEVEL_ALIASES:
         log.warning("RAIL_PROXY_LOG_LEVEL=%r is not a level; using INFO", raw)
