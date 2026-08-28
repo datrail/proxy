@@ -3,10 +3,11 @@
 The proxy is a sidecar: one process serves one agent, mounting the upstreams
 named in its config file and re-exposing their tools under a namespace.
 
-Attaching the `x-rail` ticket is the point of the component and is not
-implemented here — this module is the path a request travels. What it does
-enforce is the boundary that makes attaching one meaningful later: no header
-the agent supplies reaches an upstream.
+Attaching the `x-rail` ticket to an outbound request is the point of the
+component and is not implemented here. What this module holds is the path a
+request travels, the configuration behind it, and the startup fetch that says
+whether a ticket could be obtained at all. What it enforces is the boundary: no
+header the agent supplies reaches an upstream.
 """
 
 from __future__ import annotations
@@ -17,6 +18,9 @@ import math
 import os
 import re
 import sys
+import time
+import traceback
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
@@ -26,6 +30,12 @@ from fastmcp.client.transports import StreamableHttpTransport
 from fastmcp.server import create_proxy
 from starlette.responses import JSONResponse
 from starlette.types import ASGIApp, Receive, Scope, Send
+
+from fastmcp_proxy.xrail_auth import (
+    NoTicketAvailable,
+    TicketSource,
+    token_fingerprint,
+)
 
 DEFAULT_CONFIG_FILE = Path(__file__).resolve().parent / "bridge.yaml"
 _LOG_FORMAT = "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
@@ -128,12 +138,137 @@ def load_servers() -> list[dict[str, Any]]:
     return servers
 
 
+#: How this proxy authenticates to Rail Center. `gcp` is a value the platform
+#: defines and this component does not implement, so it is refused rather than
+#: quietly treated as `none` — which would 401 on every fetch with nothing
+#: saying why.
+_AUTH_MODES = {"none", "bearer"}
+
+
+def ticket_settings() -> dict[str, str] | None:
+    """Where this proxy's ticket comes from, or None if it has no control plane.
+
+    All three together, or none. `TicketSource` says why the sandbox name is not
+    optional.
+    """
+    url = os.environ.get("RAIL_CENTER_URL", "").strip()
+    host = os.environ.get("RAIL_HOST_ID", "").strip()
+    sandbox = os.environ.get("RAIL_SANDBOX_NAME", "").strip()
+    if not any((url, host, sandbox)):
+        return None
+
+    missing = [
+        name
+        for name, value in (
+            ("RAIL_CENTER_URL", url),
+            ("RAIL_HOST_ID", host),
+            ("RAIL_SANDBOX_NAME", sandbox),
+        )
+        if not value
+    ]
+    if missing:
+        raise ConfigError(
+            "a Rail Center is partly configured; these are also required: "
+            + ", ".join(missing)
+        )
+    return {"url": url, "host_id": host, "sandbox_name": sandbox}
+
+
+def auth_token() -> str | None:
+    """The bearer token, when the mode asks for one.
+
+    An empty token under `bearer` is refused rather than sent as nothing: an
+    unauthenticated request is indistinguishable from a correctly configured one
+    against an issuer that does not require a credential, so it would appear to
+    work until the issuer started requiring it.
+    """
+    mode = os.environ.get("RAIL_AUTH_MODE", "").strip().lower() or "none"
+    if mode not in _AUTH_MODES:
+        raise ConfigError(
+            f"RAIL_AUTH_MODE={mode!r} is not one of {', '.join(sorted(_AUTH_MODES))}"
+        )
+    if mode == "none":
+        return None
+    token = os.environ.get("RAIL_AUTH_TOKEN", "").strip()
+    if not token:
+        raise ConfigError("RAIL_AUTH_MODE=bearer requires RAIL_AUTH_TOKEN")
+    return token
+
+
+def max_ticket_lifetime() -> float | None:
+    """An operator's ceiling on a ticket's lifetime. Unset by default — see
+    `xrail_auth.IMPLAUSIBLE_TICKET_LIFETIME_SEC` for why there is no built-in
+    one."""
+    return _seconds("RAIL_PROXY_MAX_TICKET_LIFETIME_SECONDS", None)
+
+
+def allow_insecure_credential() -> bool:
+    """Whether to send a credential to Rail Center over plaintext http.
+
+    Off by default. Loopback and https need no override; this is for a
+    plaintext, non-loopback issuer — a container reaching
+    `http://host.docker.internal:…`, say, where the request crosses a virtual
+    network other containers sit on.
+    """
+    raw = os.environ.get("RAIL_PROXY_ALLOW_INSECURE_CREDENTIAL", "").strip().lower()
+    return raw in ("1", "true", "yes")
+
+
+def build_ticket_source() -> TicketSource | None:
+    """The source this proxy fetches its own ticket from, or None."""
+    settings = ticket_settings()
+    if settings is None:
+        return None
+    try:
+        return TicketSource(
+            settings["url"],
+            host_id=settings["host_id"],
+            sandbox_name=settings["sandbox_name"],
+            auth_token=auth_token(),
+            timeout_seconds=ticket_timeout(),
+            max_lifetime_seconds=max_ticket_lifetime(),
+            allow_insecure_credential=allow_insecure_credential(),
+        )
+    except ValueError as exc:
+        # The base-URL checks, the plaintext-credential refusal and the
+        # missing-name invariant all arrive as ValueError from the constructor.
+        # They are configuration mistakes, so they read as one.
+        raise ConfigError(str(exc)) from exc
+
+
 def bind_address() -> str:
     """The interface to listen on. Empty is unset, as it is for every other
     setting; a padded value would otherwise reach getaddrinfo and die inside
     uvicorn. An address that is wrong rather than merely padded still fails
     there — nothing here validates one."""
     return os.environ.get("RAIL_PROXY_BIND", "").strip() or "0.0.0.0"
+
+
+def _seconds(name: str, default: float | None) -> float | None:
+    """A positive, finite number of seconds from `name`, or `default`.
+
+    Non-finite passes `> 0` and reaches a transport as an OverflowError, past
+    every handler. Zero and negative are reported rather than taken silently:
+    somebody who asked for a bound should be told they did not get one.
+    """
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return default
+    fallback = "no bound" if default is None else f"{default:g}"
+    try:
+        value = float(raw)
+    except ValueError:
+        log.warning("%s=%r is not a number; using %s", name, raw, fallback)
+        return default
+    if not math.isfinite(value) or value <= 0:
+        log.warning(
+            "%s=%r is not a positive number of seconds; using %s",
+            name,
+            raw,
+            fallback,
+        )
+        return default
+    return value
 
 
 def upstream_timeout() -> float:
@@ -145,40 +280,54 @@ def upstream_timeout() -> float:
     layer with no deadline of its own. An agent has no way to tell either from a
     slow tool.
     """
-    raw = os.environ.get("RAIL_PROXY_UPSTREAM_TIMEOUT_SECONDS", "").strip()
-    if not raw:
-        return 30.0
-    try:
-        value = float(raw)
-    except ValueError:
-        log.warning("RAIL_PROXY_UPSTREAM_TIMEOUT_SECONDS=%r is not a number", raw)
-        return 30.0
-    # Non-finite passes `> 0` and reaches the transport as an OverflowError,
-    # past every handler. Zero and negative are reported rather than taken
-    # silently: a timeout of none is the state this setting exists to prevent,
-    # so someone who asked for one should be told they did not get it.
-    if not math.isfinite(value) or value <= 0:
-        log.warning(
-            "RAIL_PROXY_UPSTREAM_TIMEOUT_SECONDS=%r is not a positive number of "
-            "seconds; using 30",
-            raw,
-        )
-        return 30.0
-    return value
+    return _seconds("RAIL_PROXY_UPSTREAM_TIMEOUT_SECONDS", 30.0)
+
+
+def ticket_timeout() -> float:
+    """Seconds to wait on Rail Center for this proxy's own ticket.
+
+    Its own setting rather than the upstream one, because the wait falls in a
+    different place: the startup fetch runs before the listener is bound, so
+    this value is how long a Rail Center that does not answer delays the port
+    and `/health`. Sharing the upstream's value would mean raising that for a
+    slow tool server also lengthened a container's time to first health check,
+    which is how a startup delay becomes a crash loop.
+    """
+    return _seconds("RAIL_PROXY_TICKET_TIMEOUT_SECONDS", 10.0)
 
 
 def _clip(value: object, limit: int = 80) -> str:
-    """Render a rejected entry without letting a hostile config set the size of
-    the message it produces."""
-    text = repr(value)
+    """Render a rejected config entry at a bounded length.
+
+    The file is the operator's, so this bounds a log line rather than an attack
+    — a hand-edited YAML with a pasted blob in it should not produce a message
+    nobody can read.
+
+    Redacted before it is cut, not after — `_USERINFO` needs the closing `@`,
+    and a url password is comfortably long enough to be truncated across it.
+    """
+    text = _redact(repr(value))
     return text if len(text) <= limit else text[:limit] + "…"
 
 
-#: `scheme://` then anything up to the last `@` of an authority. Matched on the
-#: rendered message rather than on a url object, because the messages that carry
-#: a credential are written by libraries that never hand one over — httpx logs
-#: `HTTP Request: POST <url>` at INFO, once per request.
-_USERINFO = re.compile(r"(?P<scheme>[a-zA-Z][\w+.-]*://)[^/\s@]*@")
+#: `scheme://` then everything up to the last `@` of an authority — greedy, so
+#: a password containing its own `@` is taken whole rather than left with its
+#: tail in the line.
+#:
+#: **Why this is matched on text rather than on a url object:** the messages
+#: that carry a credential are written by libraries that never hand one over.
+#: httpx logs `HTTP Request: %s %s …` at INFO, once per request, with the whole
+#: url among the arguments — so the leak is at request rate, and redacting only
+#: where this module formats a url would miss all of it.
+#:
+#: The scheme run is length-bounded, and `_redact` returns early on text with no
+#: `://` in it at all. `[\w+.-]*://` is quadratic on a string that never
+#: satisfies it — every start position tries every length — and this runs on
+#: every record, on the loop that serves every mount. A record can carry text an
+#: untrusted sandbox chose: the MCP transport logs a rejected `Content-Type`
+#: verbatim, and its logger propagates to root. With the run bounded, both
+#: quantifiers are, and the match is linear in the length of the line.
+_USERINFO = re.compile(r"(?P<scheme>[a-zA-Z][\w+.-]{0,30}://)[^/\s]*@")
 
 
 def _redact(text: str) -> str:
@@ -186,28 +335,108 @@ def _redact(text: str) -> str:
 
     `user:pass@host` is how httpx is told to send Basic auth to an upstream, so
     a credential there is a working configuration rather than a mistake.
-    Redacting only where this module formats a url is not enough: httpx logs the
-    full url on every request, so one tool call put the password in the log
-    sixteen times.
     """
+    # An early out rather than a guard: with the scheme run bounded the match
+    # is already linear, and most records have no url in them at all.
+    if "://" not in text:
+        return text
     return _USERINFO.sub(r"\g<scheme>***@", text)
 
 
 class RedactingFilter(logging.Filter):
-    """Applies `_redact` to every record, whoever emitted it."""
+    """Applies `_redact` to every record, whoever emitted it.
+
+    The template and each argument are redacted **in place, one at a time**, and
+        an argument that did not change keeps its original object. Both halves are
+        load-bearing, and each is the fix for a way of getting this wrong.
+
+        Rendering an argument is what finds the credential: httpx passes the url as
+        an argument and passes it as an `httpx.URL`, whose `str` is the whole thing,
+        so a test for `isinstance(str)` walks straight past it. Exceptions arrive
+        the same way, in `msg` and in `args` both.
+
+        Replacing the record with one rendered string is what must not happen.
+        `uvicorn.logging.AccessFormatter` unpacks `record.args` into exactly five
+        values, and an access line *does* carry userinfo whenever a caller asks for
+        one — the query string goes in undecoded, so `POST /mcp?cb=https://a:b@x/`
+        is enough. Collapse on redaction and the untrusted sandbox can drop its own
+        request from the access log, and turn one request into fifteen lines of
+        `--- Logging error ---`, by choosing a query.
+
+        A traceback is handled too, because `Formatter.format` builds one from
+        `exc_info` *after* every filter has run and appends it to the line — so a
+        credential removed from the message is printed in full two lines below.
+        Filling `exc_text` is what a stock formatter reads instead of building its
+        own; where that is not enough, `exc_info` is dropped, which is the only way
+        to stop a handler that renders the traceback itself. That costs a rich
+        rendering in exactly the case where the traceback holds a secret.
+
+        **It never raises, and it fails closed.** `Handler.handle` guards `emit`
+        and not `filter`, and `Logger.callHandlers` guards neither, so anything
+        raised here would surface inside whatever called `log.info` — on a request
+        path, in library code this repository does not own; a `%`-format mismatch in
+        any dependency is enough. A record that could not be redacted is a record
+        that might hold a credential, so it is replaced rather than passed on.
+    """
 
     def filter(self, record: logging.LogRecord) -> bool:
-        record.msg = _redact(record.getMessage())
-        record.args = ()
+        try:
+            self._redact_record(record)
+        except Exception:
+            record.msg = "a log record could not be redacted and was withheld"
+            record.args = ()
+            record.exc_info = None
+            record.exc_text = None
         return True
+
+    @staticmethod
+    def _redact_value(value: object) -> object:
+        """`value` with any credential removed, or `value` itself unchanged.
+
+        Unchanged means the same object, not an equal one: a formatter may care
+        what it was, and `%d` on a string is a broken line. Numbers and `None`
+        are returned without being rendered at all, both because they cannot
+        hold a url and because rendering an argument here means rendering it
+        twice — the formatter does it again a moment later.
+        """
+        if value is None or isinstance(value, (int, float, complex)):
+            return value
+        text = value if isinstance(value, str) else str(value)
+        redacted = _redact(text)
+        return redacted if redacted != text else value
+
+    @classmethod
+    def _redact_record(cls, record: logging.LogRecord) -> None:
+        record.msg = cls._redact_value(record.msg)
+        if isinstance(record.args, tuple):
+            record.args = tuple(cls._redact_value(a) for a in record.args)
+        elif isinstance(record.args, Mapping):
+            # `logging` accepts a single mapping for `%(name)s` formatting.
+            # Rebuilt only if something in it changed, because rebuilding turns
+            # a mapping that answers for missing keys into one that raises.
+            redacted = {k: cls._redact_value(v) for k, v in record.args.items()}
+            if any(redacted[k] is not v for k, v in record.args.items()):
+                record.args = redacted
+
+        if record.exc_text:
+            record.exc_text = _redact(record.exc_text)
+        elif isinstance(record.exc_info, tuple):
+            rendered = "".join(traceback.format_exception(*record.exc_info))
+            record.exc_text = _redact(rendered)
+            if record.exc_text != rendered:
+                # A handler that renders from `exc_info` itself would print the
+                # original. Nothing here can sanitise the exception, so the one
+                # carrying a credential loses its traceback rather than leaking
+                # it; the redacted text stays on the record for the formatters
+                # that read it.
+                record.exc_info = None
 
 
 def build_gateway() -> FastMCP:
     """Mount every configured upstream under one endpoint.
 
     A mount's name becomes the prefix on every tool it re-exposes, so the
-    agent sees `<name>_<tool>`. Renaming a server renames every tool the
-    agents were prompted with.
+    agent sees `<name>_<tool>`.
     """
     gateway = FastMCP(name="datrail-proxy")
     timeout = upstream_timeout()
@@ -240,9 +469,8 @@ def build_gateway() -> FastMCP:
     async def health(_request):
         """Liveness only: the process is up and its config parsed.
 
-        It reports nothing about whether a ticket is held, because no ticket
-        is fetched here. Anything waiting on this to decide an agent may start
-        is waiting on the wrong signal.
+        It reports nothing about whether a ticket is held. Anything waiting on
+        this to decide an agent may start is waiting on the wrong signal.
         """
         return JSONResponse({"status": "ok"})
 
@@ -317,8 +545,8 @@ class McpMethodCompat:
 def build_app() -> ASGIApp:
     """The ASGI application, wrapped in the compatibility shim.
 
-    Stateless, which is the honest declaration of what this already was. A
-    stateful server keeps a transport per session, and nothing reclaims one
+    Stateless: no session is created, so none can be exhausted. A stateful
+    server keeps a transport per session, and nothing reclaims one
     whose client never handshakes — so an unauthenticated caller could retain
     them until the process died, on the one endpoint an untrusted sandbox can
     reach. Nothing is given up: the features the state exists for are the
@@ -361,13 +589,91 @@ def configure_logging() -> None:
     logging.basicConfig(
         level="DEBUG" if resolved == "TRACE" else resolved, format=_LOG_FORMAT
     )
-    # On the handlers rather than on a logger: a filter on a logger does not see
-    # records propagated from its children, and httpx is the one that leaks.
-    for handler in logging.root.handlers:
-        handler.addFilter(RedactingFilter())
+    _install_redaction()
     raw = os.environ.get("RAIL_PROXY_LOG_LEVEL", "").strip()
     if raw and raw.upper() not in _LEVELS and raw.upper() not in _LEVEL_ALIASES:
         log.warning("RAIL_PROXY_LOG_LEVEL=%r is not a level; using INFO", raw)
+
+
+def _install_redaction() -> None:
+    """Put a `RedactingFilter` on every handler in the process.
+
+    On handlers rather than on loggers, because a filter on a logger does not
+    see records propagated up from its children — and httpx, whose INFO line
+    carries the whole url once per request, is a child.
+
+    Every logger and not only the root, because a library that configures its
+    own handler and sets `propagate = False` never reaches root at all. fastmcp
+    does exactly that at import, and its aggregate provider logs an upstream's
+    `HTTPStatusError` — url, credential and all — whenever a `tools/list` the
+    agent asked for fails.
+
+    Safe to call twice, which `main` does — a handler that already carries one
+    is left alone.
+    """
+    loggers = [logging.root, *logging.root.manager.loggerDict.values()]
+    for logger in loggers:
+        for handler in getattr(logger, "handlers", []):
+            # `addFilter` dedupes by equality and this class defines none, so
+            # without the check a second call — or a handler two loggers share
+            # — would stack a second instance.
+            if not any(isinstance(f, RedactingFilter) for f in handler.filters):
+                handler.addFilter(RedactingFilter())
+
+
+async def report_ticket(source: TicketSource | None) -> None:
+    """Fetch this proxy's ticket once and say what came back.
+
+    The result is logged and nothing else: no request carries the ticket. Doing
+    it at startup is what makes a wrong sandbox name or a rejected credential
+    something an operator sees while they are watching.
+
+    Never fatal, which is why the source is built by the caller rather than
+    here: an issuer that is merely down is a normal condition and the proxy
+    serves without a ticket, while a configuration that could not be right is
+    refused before anything is served. Building it here would put both outcomes
+    behind the same handler and exit 1 on a traceback for the second.
+    """
+    if source is None:
+        log.info("no Rail Center configured — no ticket will be fetched")
+        return
+
+    log.info("fetching this proxy's ticket from %s", source.describe())
+    try:
+        ticket = await source.fetch()
+    except NoTicketAvailable as exc:
+        log.warning("no ticket held: %s", exc)
+        return
+    except Exception as exc:
+        # Redacted before it is truncated, for the reason `_clip` gives; an
+        # `HTTPStatusError` renders the whole url. Truncated rather than
+        # clipped, because `_clip` goes through `repr` — the wrong shape for a
+        # sentence an operator reads. A timeout's message is empty, so the type
+        # has to carry the line alone.
+        detail = _redact(str(exc))[:300]
+        log.warning(
+            "could not fetch a ticket (%s)",
+            f"{type(exc).__name__}: {detail}" if detail else type(exc).__name__,
+        )
+        return
+
+    now = time.time()
+    fingerprint = token_fingerprint(ticket.value)
+    if not ticket.is_valid(now):
+        # An expired ticket is a well-formed answer, so it arrives here rather
+        # than as an error. Reporting it as held would announce a dead identity
+        # as a healthy one, in the one log line this fetch exists to produce.
+        log.warning(
+            "ticket held but already expired (fingerprint=%s, expired %.0fs ago)",
+            fingerprint,
+            -ticket.remaining(now),
+        )
+        return
+    log.info(
+        "ticket held (fingerprint=%s, expires in %.0fs)",
+        fingerprint,
+        ticket.remaining(now),
+    )
 
 
 async def main() -> int:
@@ -376,6 +682,7 @@ async def main() -> int:
     configure_logging()
     try:
         app = build_app()
+        ticket_source = build_ticket_source()
     except ConfigError as exc:
         log.error("%s", exc)
         return 2
@@ -394,16 +701,22 @@ async def main() -> int:
         log.error("RAIL_PROXY_PORT is out of range: %d", port)
         return 2
 
+    await report_ticket(ticket_source)
+
     # uvicorn logs the bind once it has one. Announcing it here would name an
     # address the process may never get.
     # uvicorn installs its own loggers, so `basicConfig` alone leaves the access
     # log and the startup lines at INFO whatever the variable said.
-    await uvicorn.Server(
+    server = uvicorn.Server(
         uvicorn.Config(
             app,
             host=bind,
             port=port,
             log_level=log_level().lower(),
+            # Filtered again below: this constructor runs `dictConfig`, which
+            # creates `uvicorn` and `uvicorn.access` with fresh handlers and
+            # `propagate = False`, after `configure_logging` has walked
+            # everything that existed.
             # No `timeout_graceful_shutdown`: uvicorn's default waits for
             # in-flight requests indefinitely, and a bound here would be the
             # thing that cuts them off. It would not help anyway — every MCP
@@ -415,7 +728,9 @@ async def main() -> int:
             # one an agent is making to it. A restart mid-call is the agent's
             # own deadline to survive.
         )
-    ).serve()
+    )
+    _install_redaction()
+    await server.serve()
     return 0
 
 

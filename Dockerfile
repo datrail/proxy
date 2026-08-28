@@ -20,6 +20,7 @@ RUN useradd --no-create-home --uid 10001 railproxy
 # The licence travels with the distribution. An image is a way of shipping this
 # software, and Apache-2.0 asks that recipients get a copy.
 COPY LICENSE NOTICE ./
+
 COPY fastmcp_proxy/ ./fastmcp_proxy/
 
 # python:3.12-slim defines no non-root user. Nothing after the install step

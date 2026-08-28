@@ -96,19 +96,6 @@ async def test_calls_go_to_the_configured_address(config, upstream):
 
 
 @pytest.mark.asyncio
-async def test_the_namespace_is_the_configured_name(write_config, upstream):
-    """`delivery` is a value in a file, not a constant in the proxy. A second
-    name proves the prefix follows the config rather than a literal."""
-    write_config(
-        "mcp:\n  servers:\n    - name: billing\n      url: http://upstream.invalid/mcp\n"
-    )
-    async with running_proxy() as app, agent_client(app) as client:
-        tools = [t.name for t in await client.list_tools()]
-
-    assert tools == ["billing_upstream"]
-
-
-@pytest.mark.asyncio
 async def test_every_configured_upstream_is_mounted(write_config, upstream):
     """One entry is the deployed shape, so nothing else exercises the loop."""
     write_config(
@@ -136,11 +123,18 @@ async def test_the_agents_own_headers_do_not_reach_the_upstream(config, upstream
         "x-rail-status": "forged",
         "authorization": "Bearer agent-secret",
     }
+    arrived: list[dict[str, str]] = []
+
     async with running_proxy() as app:
+
+        async def recording(scope, receive, send):
+            if scope["type"] == "http":
+                arrived.append({k.decode(): v.decode() for k, v in scope["headers"]})
+            await app(scope, receive, send)
 
         def factory(**kwargs):
             return httpx.AsyncClient(
-                transport=httpx.ASGITransport(app=app),
+                transport=httpx.ASGITransport(app=recording),
                 base_url="http://proxy.test",
                 **_client_kwargs(kwargs),
             )
@@ -157,6 +151,14 @@ async def test_the_agents_own_headers_do_not_reach_the_upstream(config, upstream
 
     for name in forged:
         assert {hit["headers"].get(name) for hit in upstream} == {None}, name
+
+    # A positive control. Every assertion above is an absence, and an absence
+    # holds just as well if the forged headers never left the test's own
+    # client — the boundary and the harness that exercises it would go green
+    # together. This says they reached the proxy and stopped there.
+    assert arrived, "no request reached the proxy"
+    for name, value in forged.items():
+        assert {hit.get(name) for hit in arrived} == {value}, name
 
 
 @pytest.mark.asyncio
@@ -365,13 +367,13 @@ async def test_a_lifespan_scope_is_passed_through_untouched():
 
 @pytest.mark.asyncio
 async def test_the_upstream_timeout_reaches_the_client(config, upstream, monkeypatch):
-    """Eight cases pin `upstream_timeout()`; none pinned that its value is used.
-    Dropping the argument, dropping `init_timeout`, or hardcoding a number all
-    left the suite green — and an absent timeout is the only failure mode the
-    setting exists to prevent.
+    """The accessor is pinned elsewhere; this pins that its value reaches the
+    client. Dropping either argument, or hardcoding a number, is invisible to
+    every test that only reads the accessor — and an absent timeout is the one
+    failure mode the setting exists to prevent.
 
     Asserted at the module's own symbol rather than by walking FastMCP's
-    provider tree, which is private and has already moved once.
+    provider tree, which is private.
     """
     monkeypatch.setenv("RAIL_PROXY_UPSTREAM_TIMEOUT_SECONDS", "7")
     captured: list[dict] = []

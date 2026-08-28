@@ -1,0 +1,56 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/datrail/proxy/master/spec/ticket-fetch.schema.json",
+  "title": "Rail Center host ticket fetch",
+  "description": "Response to GET /v1/tickets?host_id=&sandbox_name=. The list is the complete answer for that host and sandbox: an empty one means no ticket exists.",
+  "type": "object",
+  "required": ["host_id", "tickets"],
+  "properties": {
+    "host_id": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Echoes the host_id that was asked for. A response echoing another is refused."
+    },
+    "tickets": {
+      "type": "array",
+      "maxItems": 1,
+      "description": "At most one entry for a named fetch, because (host_id, sandbox_name) is unique.",
+      "items": { "$ref": "#/$defs/ticket" }
+    }
+  },
+  "$defs": {
+    "ticket": {
+      "type": "object",
+      "required": ["token", "expires_at", "sandbox_name"],
+      "properties": {
+        "agent_id": {
+          "type": "string",
+          "description": "Rail Center's to assign. A caller cannot start with one, which is why the route is keyed on the host."
+        },
+        "sandbox_name": {
+          "type": "string",
+          "minLength": 1,
+          "description": "The sandbox this ticket belongs to. Required, so that a named fetch can be told from a host-wide one."
+        },
+        "token": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Opaque to its holder: what is inside is the gateway's contract, and a proxy fetching one never decodes it."
+        },
+        "expires_at": {
+          "type": "string",
+          "format": "date-time",
+          "description": "RFC 3339 with a time of day, e.g. 2026-07-28T10:15:00Z. Required: the token is opaque, so this is the only expiry there is."
+        },
+        "posture_score": {
+          "type": "number",
+          "description": "The issuer's assessment of the agent's host. For the gateway; a proxy fetching a ticket does not read it."
+        },
+        "tier": {
+          "type": "string",
+          "description": "The trust tier the score places the agent in. For the gateway; a proxy fetching a ticket does not read it."
+        }
+      }
+    }
+  }
+}
