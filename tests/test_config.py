@@ -294,3 +294,42 @@ async def test_the_bind_and_port_reach_uvicorn(config, monkeypatch):
 
     assert await proxy_module.main() == 0
     assert captured == {"host": "127.0.0.1", "port": 9099}
+
+
+def test_trace_is_translated_for_the_root_logger(monkeypatch):
+    """TRACE is uvicorn's alone. `logging.basicConfig(level="TRACE")` raises
+    ValueError, which would escape configure_logging before main's ConfigError
+    handler — a crash-loop from a log setting. Nothing else calls
+    configure_logging with it."""
+    monkeypatch.setenv("RAIL_PROXY_LOG_LEVEL", "TRACE")
+    monkeypatch.setattr(proxy_module.logging.root, "handlers", [])
+
+    proxy_module.configure_logging()
+
+    assert proxy_module.logging.root.level == proxy_module.logging.DEBUG
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("port", ["   ", "\t"], ids=["spaces", "tab"])
+async def test_a_blank_port_falls_back_rather_than_failing_to_parse(
+    config, monkeypatch, port
+):
+    """A padded unset compose interpolation. `int(" 9099 ")` already tolerates
+    padding on a real value, so only a blank one pins the strip — without it
+    this exits 2 on a variable whose documented default is 8091."""
+    monkeypatch.setenv("RAIL_PROXY_PORT", port)
+    captured: dict = {}
+
+    import uvicorn
+
+    class StubServer:
+        def __init__(self, config):
+            captured["port"] = config.port
+
+        async def serve(self):
+            return None
+
+    monkeypatch.setattr(uvicorn, "Server", StubServer)
+
+    assert await proxy_module.main() == 0
+    assert captured["port"] == 8091

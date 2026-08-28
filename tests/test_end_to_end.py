@@ -280,10 +280,14 @@ async def test_every_sessionless_method_is_answered_without_opening_a_session(
     # The response is hand-rolled ASGI, so its framing is this module's to get
     # right: a content-length that disagrees with the body is accepted by an
     # in-process transport and raises RuntimeError under a real server.
-    body = json.loads(McpMethodCompat._RESPONSE)
-    assert int(response.headers["content-length"]) == len(McpMethodCompat._RESPONSE)
-    assert body["error"]["code"] == -32600
+    assert json.loads(McpMethodCompat._RESPONSE)["error"]["code"] == -32600
     if method != "HEAD":
+        # Against the body actually received, not against the constant the code
+        # sends: comparing the header to `len(_RESPONSE)` pins the two to each
+        # other and passes while the body drifts from both. uvicorn raises
+        # RuntimeError on the mismatch, so only a real server would have caught
+        # it — and an in-process transport does not.
+        assert int(response.headers["content-length"]) == len(response.content)
         assert "accepts POST" in response.text
 
 

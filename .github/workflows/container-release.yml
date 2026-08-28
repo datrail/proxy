@@ -38,6 +38,9 @@ jobs:
   # job-level `uses:` reads another job's outputs, and cannot read a step's.
   version:
     runs-on: ubuntu-latest
+    # Nothing here touches the repository or the registry; the workflow-level
+    # grants exist for `publish`.
+    permissions: {}
     outputs:
       tag: ${{ steps.resolve.outputs.tag }}
       latest: ${{ steps.resolve.outputs.latest }}
@@ -89,7 +92,6 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: ${{ needs.version.outputs.tag }}
-          fetch-depth: 0
 
       # The commit the tag actually points at. `github.sha` is the ref the run
       # was launched from, which on a workflow_dispatch is the branch in the
