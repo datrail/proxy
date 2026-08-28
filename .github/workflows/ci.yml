@@ -4,6 +4,15 @@ on:
   pull_request:
   push:
     branches: [master]
+  # Callable so a release can gate on it. Without this the only triggers are a
+  # pull request and a push to master, and a tag can sit on a commit that saw
+  # neither.
+  workflow_call:
+    inputs:
+      ref:
+        description: "Commit or tag to check. Defaults to the triggering ref."
+        required: false
+        type: string
 
 permissions:
   contents: read
@@ -13,6 +22,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
 
       - uses: actions/setup-python@v5
         with:
@@ -26,3 +37,57 @@ jobs:
 
       # `ruff check` plus `ruff format --check`, per the Makefile.
       - run: make lint
+
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # Both ends of what this project claims to support. 3.10 is the floor
+        # ruff.toml sets, and a floor nothing runs is a guess — the module
+        # avoids `logging.getLevelNamesMapping()` for exactly that reason, and
+        # only this leg proves the avoidance was needed and sufficient. 3.12 is
+        # what the image ships (Dockerfile: python:3.12-slim); move that pin and
+        # this one moves with it.
+        python-version: ["3.10", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-test.txt
+
+      # Both files: the suite runs against the exact versions the image ships,
+      # and the test framework is not among them — requirements-test.txt is
+      # what carries pytest, for the reason requirements-dev.txt states about
+      # the linter.
+      - run: pip install -r requirements.txt -r requirements-test.txt
+
+      - run: make test
+
+  # A build failure should surface on the pull request rather than on the tag
+  # that publishes it. container-release.yml calls this whole workflow before it
+  # pushes anything, so this job runs on both paths.
+  image:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+      - uses: docker/setup-buildx-action@v3
+
+      # Build-only, amd64 only. The question here is "does it still build",
+      # which the arm64 leg answers no differently — it would just spend several
+      # minutes doing it under emulation.
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: false
+          cache-from: type=gha,scope=ci-image
+          cache-to: type=gha,mode=max,scope=ci-image

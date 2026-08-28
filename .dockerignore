@@ -1,0 +1,13 @@
+# The image needs the package and its dependency list. Everything else in the
+# repository is for developing it, and shipping documentation into a runtime
+# image puts it where `docker export` can read it long after the repository has
+# moved on.
+*
+!requirements.txt
+!fastmcp_proxy/
+!LICENSE
+!NOTICE
+
+# The runtime config is per deployment and mounted, never baked.
+fastmcp_proxy/bridge.yaml
+**/__pycache__/

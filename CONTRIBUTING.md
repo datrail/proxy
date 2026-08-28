@@ -1,6 +1,6 @@
 # Contributing to the DatRail proxy
 
-The proxy sits in front of an agent's outbound MCP calls and attaches the `x-rail` ticket that the rest of DatRail relies on, so the sandbox never holds the credential that identifies it.
+The proxy sits in front of an agent's outbound MCP calls. It is the boundary at which the `x-rail` ticket the rest of DatRail relies on is attached, so that the sandbox never holds the credential identifying it — today it forwards calls and refuses to carry a ticket the agent supplies; issuing and attaching one is not implemented yet.
 
 ## Before you write code
 

@@ -1,0 +1,16 @@
+# Copy to bridge.yaml and point it at your upstream.
+#
+# Every other setting this proxy has is an environment variable:
+# RAIL_PROXY_CONFIG_FILE (this file's path), RAIL_PROXY_BIND, RAIL_PROXY_PORT,
+# RAIL_PROXY_LOG_LEVEL and RAIL_PROXY_UPSTREAM_TIMEOUT_SECONDS, which bounds how
+# long a call waits on an upstream before the agent is told it timed out.
+# This file holds the upstream list and nothing else, because a list of
+# objects is the one thing an environment variable cannot express.
+#
+# `name` is the mount namespace, so the agent sees the upstream's tools as
+# `<name>_<tool>`. Renaming it renames every tool.
+
+mcp:
+  servers:
+    - name: delivery
+      url: http://gateway:8080/mcp

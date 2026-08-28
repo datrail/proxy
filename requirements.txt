@@ -1,0 +1,16 @@
+# Runtime. The image installs this file and nothing else.
+#
+# Pinned exactly rather than floored. container-release.yml attaches an SBOM and
+# a signed provenance attestation to every published image, and republishing a
+# version by hand is a documented path — so a floor would let `v0.1.0` be built
+# twice from different dependency closures and attested identically both times.
+# A range makes the attestation describe something that cannot be reproduced.
+fastmcp==3.4.6
+pyyaml==6.0.1
+uvicorn[standard]==0.52.1
+
+# Imported directly by fastmcp_proxy.proxy for JSONResponse and the ASGI types.
+# It arrives transitively through fastmcp as well, but a module that imports a
+# package names it: the transitive path is three levels deep and held in place
+# by nothing this repository controls.
+starlette==1.4.1

@@ -1,4 +1,4 @@
-.PHONY: lint
+.PHONY: lint test
 
 # The gate is defined here rather than in .github/workflows/ci.yml, so the command
 # CI runs is the one you can run before opening a pull request. Note that ruff
@@ -7,3 +7,6 @@
 lint:
 	ruff check .
 	ruff format --check .
+
+test:
+	python -m pytest -q
