@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 import os
 import sys
 from pathlib import Path
@@ -120,7 +121,18 @@ def upstream_timeout() -> float:
     except ValueError:
         log.warning("RAIL_PROXY_UPSTREAM_TIMEOUT_SECONDS=%r is not a number", raw)
         return 30.0
-    return value if value > 0 else 30.0
+    # Non-finite passes `> 0` and reaches the transport as an OverflowError,
+    # past every handler. Zero and negative are reported rather than taken
+    # silently: a timeout of none is the state this setting exists to prevent,
+    # so someone who asked for one should be told they did not get it.
+    if not math.isfinite(value) or value <= 0:
+        log.warning(
+            "RAIL_PROXY_UPSTREAM_TIMEOUT_SECONDS=%r is not a positive number of "
+            "seconds; using 30",
+            raw,
+        )
+        return 30.0
+    return value
 
 
 def build_gateway() -> FastMCP:
@@ -131,17 +143,13 @@ def build_gateway() -> FastMCP:
     agents were prompted with.
     """
     gateway = FastMCP(name="datrail-proxy")
+    timeout = upstream_timeout()
 
     for srv in load_servers():
-        timeout = upstream_timeout()
         transport = StreamableHttpTransport(url=srv["url"])
         proxy = create_proxy(
             Client(transport, timeout=timeout, init_timeout=timeout),
             name=f"proxy-{srv['name']}",
-            # Default is "warn", which turns an unreachable upstream into an
-            # empty tool list — so an agent is told the tool does not exist
-            # rather than that the thing behind it is down, and does not retry.
-            provider_error_strategy="raise",
         )
 
         # `create_proxy` turns on incoming-header forwarding, which is wrong for
@@ -207,7 +215,7 @@ class McpMethodCompat:
         POST is how a session is created, so it always passes through. Every
         other method — GET for the stream, and HEAD, OPTIONS, PUT, DELETE,
         PATCH — is answered here, because forwarding one makes FastMCP allocate
-        a transport before deciding it is a 405, and nothing reclaims a
+        a transport before deciding to reject it, and nothing reclaims a
         transport that never handshakes. Gating on GET alone left every other
         verb leaking: 5,000 HEADs took the container from 61 to 267 MiB.
 
@@ -297,7 +305,7 @@ async def main() -> int:
         log.error("%s", exc)
         return 2
 
-    bind = os.environ.get("RAIL_PROXY_BIND", "0.0.0.0")
+    bind = os.environ.get("RAIL_PROXY_BIND", "").strip() or "0.0.0.0"
     raw_port = os.environ.get("RAIL_PROXY_PORT", "").strip() or "8091"
     try:
         port = int(raw_port)
@@ -321,11 +329,13 @@ async def main() -> int:
             host=bind,
             port=port,
             log_level=log_level().lower(),
-            # Without this uvicorn stops immediately and an in-flight tool call
-            # is dropped with no response, leaving the agent waiting on an
-            # answer that will never come. A routine restart should not wedge
-            # the thing this proxy exists to serve.
-            timeout_graceful_shutdown=int(upstream_timeout()),
+            # No `timeout_graceful_shutdown`: uvicorn's default waits for
+            # in-flight requests indefinitely, and a bound here would be the
+            # thing that cuts them off. It would not help anyway — every MCP
+            # response is server-sent events, and sse_starlette patches
+            # uvicorn's exit handler to abort those bodies before any grace
+            # period applies, so SIGTERM mid-call leaves the agent without a
+            # response either way. Bounding that is the client's timeout, above.
         )
     ).serve()
     return 0

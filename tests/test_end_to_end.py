@@ -287,7 +287,9 @@ async def test_post_is_never_answered_here(config, upstream):
     ):
         response = await raw.post("/mcp", headers={"Accept": MCP_ACCEPT}, json={})
 
-    assert response.status_code != 405
+    # Not `!= 405`: that holds for a proxy answering 500 to everything. A
+    # malformed POST is the transport's to reject, and it rejects with 400.
+    assert response.status_code == 400
 
 
 @pytest.mark.asyncio
@@ -307,4 +309,6 @@ async def test_a_session_id_passes_through_whatever_the_method(config, upstream)
             headers={"Accept": MCP_ACCEPT, "mcp-session-id": "no-such"},
         )
 
-    assert response.status_code != 405
+    # The docstring promises the session-ended answer, so assert it rather than
+    # merely that the shim kept its hands off.
+    assert response.status_code == 404

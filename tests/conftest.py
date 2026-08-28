@@ -83,10 +83,16 @@ def _upstream_handler(seen: list[dict[str, Any]]):
 
 
 def _client_kwargs(kwargs: dict[str, Any]) -> dict[str, Any]:
-    """The subset of the factory's kwargs an AsyncClient accepts alongside a
-    transport. FastMCP passes headers, auth and follow_redirects."""
+    """The factory's kwargs an AsyncClient accepts alongside a transport.
+
+    fastmcp 3.4.6 passes headers, auth, follow_redirects and timeout. Dropping
+    timeout would discard the very bound `upstream_timeout()` exists to set, so
+    the test client would not carry what the real one does.
+    """
     return {
-        k: v for k, v in kwargs.items() if k in ("headers", "auth", "follow_redirects")
+        k: v
+        for k, v in kwargs.items()
+        if k in ("headers", "auth", "follow_redirects", "timeout")
     }
 
 

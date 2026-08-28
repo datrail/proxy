@@ -7,6 +7,7 @@ is that a hand-edited YAML file goes wrong in more shapes than an empty one.
 
 from __future__ import annotations
 
+import os
 import pathlib
 
 import pytest
@@ -19,7 +20,9 @@ def test_a_missing_config_file_is_reported_by_path(write_config, monkeypatch, tm
     container started without a mounted config lands here."""
     monkeypatch.setenv("RAIL_PROXY_CONFIG_FILE", str(tmp_path / "absent.yaml"))
 
-    with pytest.raises(proxy_module.ConfigError, match="cannot read"):
+    # The path is what the message is for: an operator seeing this needs to know
+    # which file was looked for, not that a file was.
+    with pytest.raises(proxy_module.ConfigError, match=r"cannot read .*absent\.yaml"):
         proxy_module.load_servers()
 
 
@@ -198,16 +201,54 @@ async def test_a_port_outside_the_range_is_reported(config, monkeypatch, port):
 
 
 @pytest.mark.parametrize(
-    ("value", "expected"),
-    [("", 30.0), ("5", 5.0), ("2.5", 2.5), ("0", 30.0), ("-1", 30.0), ("abc", 30.0)],
-    ids=["unset", "integer", "fractional", "zero", "negative", "junk"],
+    ("value", "expected", "warns"),
+    [
+        ("", 30.0, False),
+        ("5", 5.0, False),
+        ("2.5", 2.5, False),
+        ("0", 30.0, True),
+        ("-1", 30.0, True),
+        ("abc", 30.0, True),
+        ("inf", 30.0, True),
+        ("1e400", 30.0, True),
+    ],
+    ids=[
+        "unset",
+        "integer",
+        "fractional",
+        "zero",
+        "negative",
+        "junk",
+        "inf",
+        "overflow",
+    ],
 )
 def test_the_upstream_timeout_falls_back_rather_than_disabling_itself(
-    monkeypatch, value, expected
+    monkeypatch, caplog, value, expected, warns
 ):
-    """Zero and negative are refused rather than honoured: a timeout of none is
-    how a hung upstream becomes an agent waiting forever, which is the state
-    this setting exists to bound."""
+    """A timeout of none is how a hung upstream becomes an agent waiting for
+    ever, which is what this setting exists to bound — so zero, negative and
+    non-finite are refused, and refused audibly: somebody who asked for one
+    should be told they did not get it. `inf` also reaches the transport as an
+    OverflowError past every handler if it is let through."""
     monkeypatch.setenv("RAIL_PROXY_UPSTREAM_TIMEOUT_SECONDS", value)
 
-    assert proxy_module.upstream_timeout() == expected
+    with caplog.at_level("WARNING"):
+        assert proxy_module.upstream_timeout() == expected
+
+    assert bool(caplog.records) is warns
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [("", "0.0.0.0"), ("   ", "0.0.0.0"), (" 127.0.0.1 ", "127.0.0.1")],
+    ids=["empty", "whitespace", "padded"],
+)
+def test_the_bind_address_is_stripped_like_every_other_setting(
+    monkeypatch, value, expected
+):
+    """It was the one variable read raw. A padded value reached getaddrinfo and
+    exited 3 through uvicorn rather than 2 with this module's own message."""
+    monkeypatch.setenv("RAIL_PROXY_BIND", value)
+
+    assert (os.environ.get("RAIL_PROXY_BIND", "").strip() or "0.0.0.0") == expected
