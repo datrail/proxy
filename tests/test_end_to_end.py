@@ -58,7 +58,7 @@ async def test_the_upstreams_tools_reach_the_agent_namespaced(config, upstream):
     async with running_proxy() as app, agent_client(app) as client:
         tools = [t.name for t in await client.list_tools()]
 
-    assert tools == ["delivery_echo"]
+    assert tools == ["delivery_upstream"]
 
 
 @pytest.mark.asyncio
@@ -66,7 +66,7 @@ async def test_a_tool_call_is_forwarded_and_its_answer_returned(config, upstream
     """The whole path, in one assertion each way: the call reaches the upstream,
     and the upstream's answer reaches the agent."""
     async with running_proxy() as app, agent_client(app) as client:
-        result = await client.call_tool("delivery_echo", {"text": "hello"})
+        result = await client.call_tool("delivery_upstream", {"text": "hello"})
 
     assert result.content[0].text == "reached-the-upstream"
 
@@ -75,7 +75,7 @@ async def test_a_tool_call_is_forwarded_and_its_answer_returned(config, upstream
     # The namespace is added on the way in and stripped on the way out. Asserting
     # only that a call happened would pass against a proxy forwarding
     # `delivery_echo`, which no upstream would recognise.
-    assert calls[0]["tool"] == "echo"
+    assert calls[0]["tool"] == "upstream"
     assert calls[0]["arguments"] == {"text": "hello"}
 
 
@@ -84,7 +84,7 @@ async def test_calls_go_to_the_configured_address(config, upstream):
     """The stub answers any host and path, so without this nothing pins the url
     from the config to the request that is actually made."""
     async with running_proxy() as app, agent_client(app) as client:
-        await client.call_tool("delivery_echo", {"text": "hello"})
+        await client.call_tool("delivery_upstream", {"text": "hello"})
 
     assert {hit["url"] for hit in upstream} == {"http://upstream.invalid/mcp"}
 
@@ -99,7 +99,7 @@ async def test_the_namespace_is_the_configured_name(write_config, upstream):
     async with running_proxy() as app, agent_client(app) as client:
         tools = [t.name for t in await client.list_tools()]
 
-    assert tools == ["billing_echo"]
+    assert tools == ["billing_upstream"]
 
 
 @pytest.mark.asyncio
@@ -113,7 +113,9 @@ async def test_every_configured_upstream_is_mounted(write_config, upstream):
     async with running_proxy() as app, agent_client(app) as client:
         tools = sorted(t.name for t in await client.list_tools())
 
-    assert tools == ["billing_echo", "delivery_echo"]
+    # The suffix is the host each mount dialled, so this pins mount to url:
+    # a hardcoded address, or two upstreams swapped, gives different names.
+    assert tools == ["billing_two", "delivery_one"]
 
 
 @pytest.mark.asyncio
@@ -145,7 +147,7 @@ async def test_the_agents_own_headers_do_not_reach_the_upstream(config, upstream
             )
         )
         async with client:
-            await client.call_tool("delivery_echo", {"text": "hello"})
+            await client.call_tool("delivery_upstream", {"text": "hello"})
 
     for name in forged:
         assert {hit["headers"].get(name) for hit in upstream} == {None}, name
@@ -161,7 +163,7 @@ async def test_no_identity_header_is_attached(config, upstream):
     from a default would be indistinguishable from one that was configured to.
     """
     async with running_proxy() as app, agent_client(app) as client:
-        await client.call_tool("delivery_echo", {"text": "hello"})
+        await client.call_tool("delivery_upstream", {"text": "hello"})
 
     # Every header on the wire, not a two-name allowlist: a proxy that started
     # attaching something else would otherwise pass this unchanged.
@@ -186,9 +188,9 @@ async def test_get_on_the_mcp_path_is_refused_as_the_transport_requires(
     config, upstream
 ):
     """A client that follows the transport spec treats anything but 405 on
-    `GET /mcp` as fatal, and FastMCP answers 400 without a session id and 404
-    with an unknown one. Both are rewritten; if a future version answers a
-    third status this test is what notices."""
+    `GET /mcp` as fatal. The probe is answered here rather than forwarded, so
+    what FastMCP would have said does not arise — and neither does the session
+    it would have allocated for a request that never completes a handshake."""
     async with (
         running_proxy() as app,
         httpx.AsyncClient(
@@ -196,12 +198,16 @@ async def test_get_on_the_mcp_path_is_refused_as_the_transport_requires(
         ) as raw,
     ):
         no_session = await raw.get("/mcp", headers={"Accept": MCP_ACCEPT})
+        trailing_slash = await raw.get("/mcp/", headers={"Accept": MCP_ACCEPT})
         unknown_session = await raw.get(
             "/mcp", headers={"Accept": MCP_ACCEPT, "mcp-session-id": "no-such"}
         )
 
     assert no_session.status_code == 405
     assert no_session.headers["allow"] == "POST"
+    # `/mcp/` is the url a client is given. Forwarded, it redirects before any
+    # status worth rewriting exists; answered here, it behaves like `/mcp`.
+    assert trailing_slash.status_code == 405
     # A session id that no session matches means the session ended, not that the
     # stream is unavailable. Answering 405 would leave the client reusing it.
     assert unknown_session.status_code == 404

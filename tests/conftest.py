@@ -18,6 +18,13 @@ def _upstream_handler(seen: list[dict[str, Any]]):
     It answers plain JSON rather than SSE-framed events. That is not a
     shortcut: the transport accepts both, and the JSON form is what lets an
     off-the-shelf stub stand in for this upstream outside the test suite.
+
+    **Its tool is named after the host that was dialled.** One handler serves
+    every mount, so a stub answering identically everywhere would let a proxy
+    hardcode a url, mount every server against the first one, or swap two
+    upstreams, and no assertion about tool names could tell. Deriving the name
+    from `request.url.host` means a tool can only appear if the address its
+    config named was the address actually called.
     """
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -47,7 +54,7 @@ def _upstream_handler(seen: list[dict[str, Any]]):
             result = {
                 "tools": [
                     {
-                        "name": "echo",
+                        "name": request.url.host.split(".")[0],
                         "description": "Echo the text back.",
                         "inputSchema": {
                             "type": "object",

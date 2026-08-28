@@ -6,7 +6,6 @@
 # twice from different dependency closures and attested identically both times.
 # A range makes the attestation describe something that cannot be reproduced.
 fastmcp==3.4.6
-httpx==0.28.1
 pyyaml==6.0.1
 uvicorn[standard]==0.52.1
 

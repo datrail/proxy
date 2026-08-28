@@ -1,4 +1,10 @@
 # The test suite. Installed alongside requirements.txt in CI and never in the
 # image — the same rule requirements-dev.txt states for the linter.
+#
+# httpx is here rather than in requirements.txt because the package does not
+# import it; the tests do, for MockTransport and ASGITransport. It reaches the
+# image anyway as a dependency of fastmcp, which is a different claim from this
+# repository depending on it.
 pytest==9.1.1
 pytest-asyncio==1.4.0
+httpx==0.28.1

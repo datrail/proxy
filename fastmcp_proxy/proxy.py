@@ -16,20 +16,11 @@ from pathlib import Path
 from typing import Any
 
 import yaml
-
-try:
-    from fastmcp import Client, FastMCP
-    from fastmcp.client.transports import StreamableHttpTransport
-    from fastmcp.server import create_proxy
-except ImportError:  # pragma: no cover - dependency missing, not a code path
-    print(
-        "error: fastmcp not installed. install via:\n    pip install -r requirements.txt",
-        file=sys.stderr,
-    )
-    sys.exit(1)
-
+from fastmcp import Client, FastMCP
+from fastmcp.client.transports import StreamableHttpTransport
+from fastmcp.server import create_proxy
 from starlette.responses import JSONResponse
-from starlette.types import ASGIApp, Message, Receive, Scope, Send
+from starlette.types import ASGIApp, Receive, Scope, Send
 
 DEFAULT_CONFIG_FILE = Path(__file__).resolve().parent / "bridge.yaml"
 _LOG_FORMAT = "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
@@ -58,10 +49,11 @@ def config_file() -> Path:
 def load_servers() -> list[dict[str, Any]]:
     """Read `mcp.servers` from the config file.
 
-    Exits rather than serving a configuration nobody meant: the image bakes
+    Raises rather than serving a configuration nobody meant: the image bakes
     `RAIL_PROXY_CONFIG_FILE` to a path that holds no file, so a container
     started without a mounted config stops here instead of coming up with no
-    upstream and answering every tool list with nothing.
+    upstream and answering every tool list with nothing. `main` turns this into
+    exit 2.
     """
     path = config_file()
     try:
@@ -136,22 +128,27 @@ def build_gateway() -> FastMCP:
     return gateway
 
 
-#: What FastMCP answers a stream probe with: 400 on the pinned version, 404 kept
-#: because the two have swapped between releases. A 404 answering a request that
-#: *did* carry a session id means something else — the session is gone and the
-#: client should open a new one — which is why `_is_stream_probe` excludes it.
-_REWRITE_STATUSES = {400, 404}
-
-
 class McpGetStatusCompat:
-    """Answer `GET /mcp` with 405, which is what the transport requires.
+    """Answer a stream probe with 405, which is what the transport requires.
 
-    A server that does not offer the optional server-to-client SSE stream is
-    supposed to refuse the GET with `405 Method Not Allowed`; a client then
-    skips the stream and carries on. FastMCP answers 400 or 404 instead, and a
-    client that follows the spec treats anything but 405 as fatal — so without
-    this the session ends before the first tool call.
+    A server that does not offer the optional server-to-client SSE stream must
+    refuse the GET with `405 Method Not Allowed`; a client then skips the stream
+    and carries on. FastMCP answers 400 or 404 instead, and a client following
+    the spec treats anything but 405 as fatal — so without this the session ends
+    before the first tool call.
+
+    The probe is answered here rather than forwarded and its status rewritten.
+    Forwarding means FastMCP allocates a transport session for every GET, and
+    nothing reclaims one that never completes a handshake: an unauthenticated
+    caller could open them until the process ran out of memory. It also means
+    `/mcp/` never reaches the rewrite at all, because the redirect to `/mcp`
+    answers first with a 307 the client is not expecting either.
     """
+
+    _RESPONSE = (
+        b'{"jsonrpc":"2.0","error":{"code":-32600,'
+        b'"message":"This server does not offer a GET event stream."},"id":null}'
+    )
 
     def __init__(self, app: ASGIApp) -> None:
         self.app = app
@@ -160,14 +157,14 @@ class McpGetStatusCompat:
     def _is_stream_probe(scope: Scope) -> bool:
         """A GET at the MCP endpoint itself, offering no session id.
 
-        Matched exactly rather than by prefix: `startswith("/mcp")` also catches
-        `/mcp-admin` and `/mcpfoo`, and answering those `405 Allow: POST`
-        asserts that posting to them would work — a claim about a route that
-        does not exist.
+        The path is matched exactly rather than by prefix: `startswith("/mcp")`
+        also catches `/mcp-admin` and `/mcpfoo`, and answering those
+        `405 Allow: POST` asserts that posting to them would work — a claim
+        about a route that does not exist.
 
         A request carrying a session id is excluded, because a 404 then means
-        the session has ended; answering 405 leaves that client reusing a dead
-        session instead of opening a new one.
+        the session has ended; answering 405 would leave that client reusing a
+        dead session instead of opening a new one.
         """
         if scope["type"] != "http" or scope["method"] != "GET":
             return False
@@ -182,16 +179,18 @@ class McpGetStatusCompat:
             await self.app(scope, receive, send)
             return
 
-        async def send_wrapper(message: Message) -> None:
-            if (
-                message["type"] == "http.response.start"
-                and message["status"] in _REWRITE_STATUSES
-            ):
-                message["status"] = 405
-                message["headers"] = [*message.get("headers", []), (b"allow", b"POST")]
-            await send(message)
-
-        await self.app(scope, receive, send_wrapper)
+        await send(
+            {
+                "type": "http.response.start",
+                "status": 405,
+                "headers": [
+                    (b"allow", b"POST"),
+                    (b"content-type", b"application/json"),
+                    (b"content-length", str(len(self._RESPONSE)).encode()),
+                ],
+            }
+        )
+        await send({"type": "http.response.body", "body": self._RESPONSE})
 
 
 def build_app() -> ASGIApp:
@@ -205,8 +204,11 @@ def configure_logging() -> None:
     An unusable level is worth a complaint, not an exit: the proxy's job does
     not depend on it, and dying over a log setting loses the traffic too.
     """
-    level = os.environ.get("RAIL_PROXY_LOG_LEVEL", "INFO").upper()
-    if level not in logging.getLevelNamesMapping():
+    level = os.environ.get("RAIL_PROXY_LOG_LEVEL", "INFO").strip().upper()
+    # `getLevelName` returns the number for a known name and the string
+    # "Level <name>" for anything else. `getLevelNamesMapping()` would read
+    # better and does not exist before 3.11, which is below the declared floor.
+    if not isinstance(logging.getLevelName(level), int):
         logging.basicConfig(level="INFO", format=_LOG_FORMAT)
         log.warning("RAIL_PROXY_LOG_LEVEL=%r is not a level; using INFO", level)
         return

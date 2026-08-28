@@ -1,7 +1,8 @@
 # Copy to bridge.yaml and point it at your upstream.
 #
-# Every other setting this proxy has is an environment variable — see the
-# README. This file holds the upstream list and nothing else, because a list of
+# Every other setting this proxy has is an environment variable:
+# RAIL_PROXY_CONFIG_FILE (this file's path), RAIL_PROXY_BIND, RAIL_PROXY_PORT
+# and RAIL_PROXY_LOG_LEVEL. This file holds the upstream list and nothing else, because a list of
 # objects is the one thing an environment variable cannot express.
 #
 # `name` is the mount namespace, so the agent sees the upstream's tools as

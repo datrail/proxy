@@ -7,6 +7,8 @@ is that a hand-edited YAML file goes wrong in more shapes than an empty one.
 
 from __future__ import annotations
 
+import pathlib
+
 import pytest
 
 from fastmcp_proxy import proxy as proxy_module
@@ -21,13 +23,34 @@ def test_a_missing_config_file_is_reported_by_path(write_config, monkeypatch, tm
         proxy_module.load_servers()
 
 
-def test_an_unset_config_path_falls_back_rather_than_reading_the_directory(monkeypatch):
+@pytest.mark.parametrize(
+    "value", ["", "   ", "\t\n"], ids=["empty", "spaces", "whitespace"]
+)
+def test_a_blank_config_path_falls_back_to_the_packaged_default(monkeypatch, value):
     """An unset compose interpolation yields an empty string, and `Path("")` is
     the current directory — which exists, so a naive check passes and the read
-    fails on a directory instead of reporting a missing config."""
-    monkeypatch.setenv("RAIL_PROXY_CONFIG_FILE", "")
+    fails on a directory instead of reporting a missing config. Whitespace is
+    the same mistake with a space in it."""
+    monkeypatch.setenv("RAIL_PROXY_CONFIG_FILE", value)
 
-    assert proxy_module.config_file() == proxy_module.DEFAULT_CONFIG_FILE
+    # Compared against the path itself rather than against the constant the
+    # function returns, which would hold however the constant was defined.
+    assert proxy_module.config_file() == (
+        pathlib.Path(proxy_module.__file__).parent / "bridge.yaml"
+    )
+
+
+def test_a_config_that_is_not_utf_8_is_reported_rather_than_raised(
+    write_config, tmp_path, monkeypatch
+):
+    """UnicodeDecodeError is not an OSError, so it escapes the read guard
+    unless it is caught on its own."""
+    path = tmp_path / "bridge.yaml"
+    path.write_bytes(b"mcp:\n  servers:\n    - name: \xff\xfe\n")
+    monkeypatch.setenv("RAIL_PROXY_CONFIG_FILE", str(path))
+
+    with pytest.raises(proxy_module.ConfigError, match="not valid UTF-8"):
+        proxy_module.load_servers()
 
 
 @pytest.mark.parametrize(
@@ -85,5 +108,29 @@ async def test_the_entrypoint_turns_an_unusable_config_into_exit_2(write_config)
     """`load_servers` raises so that importing this module cannot take its
     caller down; `main` is where that becomes the container's exit code."""
     write_config("- not a mapping\n")
+
+    assert await proxy_module.main() == 2
+
+
+@pytest.mark.parametrize(
+    ("level", "effective"),
+    [("debug", 10), ("WARNING", 30), ("not-a-level", 20)],
+    ids=["lowercase", "exact", "unusable-falls-back"],
+)
+def test_the_log_level_is_applied_or_fallen_back_from(monkeypatch, level, effective):
+    """An unusable level is a complaint, not an exit: the proxy's job does not
+    depend on it, and dying over a log setting loses the traffic too."""
+    monkeypatch.setenv("RAIL_PROXY_LOG_LEVEL", level)
+    monkeypatch.setattr(proxy_module.logging.root, "handlers", [])
+
+    proxy_module.configure_logging()
+
+    assert proxy_module.logging.root.level == effective
+
+
+@pytest.mark.asyncio
+async def test_an_unusable_port_is_reported_rather_than_crashing(config, monkeypatch):
+    """It used to be parsed at import, which made the module unimportable."""
+    monkeypatch.setenv("RAIL_PROXY_PORT", "8091x")
 
     assert await proxy_module.main() == 2
