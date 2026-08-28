@@ -91,6 +91,24 @@ def test_an_unusable_config_raises_rather_than_crashing(write_config, body, expe
         proxy_module.load_servers()
 
 
+@pytest.mark.parametrize(
+    "url",
+    ["gateway:8080/mcp", "//gateway:8080/mcp", "ftp://gateway/mcp", "/mcp"],
+    ids=["no-scheme", "protocol-relative", "wrong-scheme", "path-only"],
+)
+def test_an_unusable_url_is_reported_rather_than_raised_from_the_mount(
+    write_config, url
+):
+    """The transport rejects these with a ValueError from the mount loop, past
+    every handler — a traceback and exit 1, where the file's other mistakes give
+    a sentence and exit 2. `gateway:8080/mcp` is the packaged example minus its
+    scheme, which is the likeliest hand-edit of this file."""
+    write_config(f"mcp:\n  servers:\n    - name: delivery\n      url: {url}\n")
+
+    with pytest.raises(proxy_module.ConfigError, match="scheme"):
+        proxy_module.load_servers()
+
+
 def test_usable_entries_survive_alongside_unusable_ones(write_config):
     write_config(
         "mcp:\n"

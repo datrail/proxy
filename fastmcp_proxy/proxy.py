@@ -87,6 +87,19 @@ def load_servers() -> list[dict[str, Any]]:
     ]
     if not servers:
         raise ConfigError(f"{path} names no upstream with both a name and a url")
+
+    # The transport rejects a url it cannot use by raising ValueError from the
+    # mount loop, which is past every handler and lands as a traceback and exit
+    # 1. `gateway:8080/mcp` — the packaged example minus its scheme — is the
+    # likeliest hand-edit of this file, so it is checked where the rest of the
+    # file's mistakes are reported.
+    for entry in servers:
+        url = str(entry["url"])
+        if not url.startswith(("http://", "https://")):
+            raise ConfigError(
+                f"{path}: upstream {entry['name']!r} has no http:// or https:// "
+                f"scheme: {url!r}"
+            )
     return servers
 
 
@@ -154,19 +167,25 @@ class McpGetStatusCompat:
         self.app = app
 
     @staticmethod
-    def _is_stream_probe(scope: Scope) -> bool:
-        """A GET at the MCP endpoint itself, offering no session id.
+    def _answer_here(scope: Scope) -> bool:
+        """Anything at the MCP endpoint that opens no session and cannot use one.
+
+        POST is how a session is created, so it always passes through. Every
+        other method — GET for the stream, and HEAD, OPTIONS, PUT, DELETE,
+        PATCH — is answered here, because forwarding one makes FastMCP allocate
+        a transport before deciding it is a 405, and nothing reclaims a
+        transport that never handshakes. Gating on GET alone left every other
+        verb leaking: 5,000 HEADs took the container from 61 to 267 MiB.
+
+        A request carrying a session id passes through whatever its method: a
+        404 then means the session has ended, and DELETE with one is how a
+        client terminates its own session.
 
         The path is matched exactly rather than by prefix: `startswith("/mcp")`
         also catches `/mcp-admin` and `/mcpfoo`, and answering those
-        `405 Allow: POST` asserts that posting to them would work — a claim
-        about a route that does not exist.
-
-        A request carrying a session id is excluded, because a 404 then means
-        the session has ended; answering 405 would leave that client reusing a
-        dead session instead of opening a new one.
+        `405 Allow: …` asserts something about a route that does not exist.
         """
-        if scope["type"] != "http" or scope["method"] != "GET":
+        if scope["type"] != "http" or scope["method"] == "POST":
             return False
         if scope["path"] not in ("/mcp", "/mcp/"):
             return False
@@ -175,7 +194,7 @@ class McpGetStatusCompat:
         )
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
-        if not self._is_stream_probe(scope):
+        if not self._answer_here(scope):
             await self.app(scope, receive, send)
             return
 
@@ -184,7 +203,7 @@ class McpGetStatusCompat:
                 "type": "http.response.start",
                 "status": 405,
                 "headers": [
-                    (b"allow", b"POST"),
+                    (b"allow", b"POST, DELETE"),
                     (b"content-type", b"application/json"),
                     (b"content-length", str(len(self._RESPONSE)).encode()),
                 ],
@@ -204,10 +223,10 @@ def configure_logging() -> None:
     An unusable level is worth a complaint, not an exit: the proxy's job does
     not depend on it, and dying over a log setting loses the traffic too.
     """
-    level = os.environ.get("RAIL_PROXY_LOG_LEVEL", "INFO").strip().upper()
+    level = os.environ.get("RAIL_PROXY_LOG_LEVEL", "").strip().upper() or "INFO"
     # `getLevelName` returns the number for a known name and the string
     # "Level <name>" for anything else. `getLevelNamesMapping()` would read
-    # better and does not exist before 3.11, which is below the declared floor.
+    # better and arrived in 3.11, above the 3.10 floor this project declares.
     if not isinstance(logging.getLevelName(level), int):
         logging.basicConfig(level="INFO", format=_LOG_FORMAT)
         log.warning("RAIL_PROXY_LOG_LEVEL=%r is not a level; using INFO", level)

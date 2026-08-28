@@ -204,7 +204,7 @@ async def test_get_on_the_mcp_path_is_refused_as_the_transport_requires(
         )
 
     assert no_session.status_code == 405
-    assert no_session.headers["allow"] == "POST"
+    assert no_session.headers["allow"] == "POST, DELETE"
     # `/mcp/` is the url a client is given. Forwarded, it redirects before any
     # status worth rewriting exists; answered here, it behaves like `/mcp`.
     assert trailing_slash.status_code == 405
@@ -248,3 +248,62 @@ async def test_health_answers_without_an_upstream_being_reachable(config, upstre
     assert response.status_code == 200
     assert response.json() == {"status": "ok"}
     assert upstream == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("method", ["HEAD", "OPTIONS", "PUT", "DELETE", "PATCH"])
+async def test_every_sessionless_method_is_answered_without_opening_a_session(
+    config, upstream, method
+):
+    """Forwarding one of these makes FastMCP allocate a transport before
+    deciding it is a 405, and nothing reclaims a transport that never
+    handshakes — so an unauthenticated caller could exhaust the process with a
+    verb the shim did not cover. The distinctive body is what proves the answer
+    came from here rather than from downstream."""
+    async with (
+        running_proxy() as app,
+        httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://proxy.test"
+        ) as raw,
+    ):
+        response = await raw.request(method, "/mcp", headers={"Accept": MCP_ACCEPT})
+
+    assert response.status_code == 405
+    assert response.headers["allow"] == "POST, DELETE"
+    if method != "HEAD":
+        assert "does not offer a GET event stream" in response.text
+
+
+@pytest.mark.asyncio
+async def test_post_is_never_answered_here(config, upstream):
+    """POST is how a session is created. Answering it would end the protocol
+    before it began."""
+    async with (
+        running_proxy() as app,
+        httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://proxy.test"
+        ) as raw,
+    ):
+        response = await raw.post("/mcp", headers={"Accept": MCP_ACCEPT}, json={})
+
+    assert response.status_code != 405
+
+
+@pytest.mark.asyncio
+async def test_a_session_id_passes_through_whatever_the_method(config, upstream):
+    """DELETE with a session id is how a client terminates its own session, and
+    a 404 for any method means the session has ended rather than that the method
+    is unavailable."""
+    async with (
+        running_proxy() as app,
+        httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://proxy.test"
+        ) as raw,
+    ):
+        response = await raw.request(
+            "DELETE",
+            "/mcp",
+            headers={"Accept": MCP_ACCEPT, "mcp-session-id": "no-such"},
+        )
+
+    assert response.status_code != 405
