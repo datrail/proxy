@@ -40,18 +40,24 @@ jobs:
 
   test:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # Both ends of what this project claims to support. 3.10 is the floor
+        # ruff.toml sets, and a floor nothing runs is a guess — the module
+        # avoids `logging.getLevelNamesMapping()` for exactly that reason, and
+        # only this leg proves the avoidance was needed and sufficient. 3.12 is
+        # what the image ships (Dockerfile: python:3.12-slim); move that pin and
+        # this one moves with it.
+        python-version: ["3.10", "3.12"]
     steps:
       - uses: actions/checkout@v4
         with:
           ref: ${{ inputs.ref }}
 
-      # Pinned to the interpreter the image ships (Dockerfile: python:3.12-slim).
-      # There is no .python-version to read from, so if the Dockerfile moves,
-      # move this with it — otherwise the suite passes on a Python the image
-      # never runs.
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          python-version: ${{ matrix.python-version }}
           cache: pip
           cache-dependency-path: |
             requirements.txt

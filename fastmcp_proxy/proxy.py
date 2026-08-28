@@ -141,26 +141,32 @@ def build_gateway() -> FastMCP:
     return gateway
 
 
-class McpGetStatusCompat:
-    """Answer a stream probe with 405, which is what the transport requires.
+class McpMethodCompat:
+    """Answer 405 to methods the MCP endpoint does not serve.
 
     A server that does not offer the optional server-to-client SSE stream must
-    refuse the GET with `405 Method Not Allowed`; a client then skips the stream
-    and carries on. FastMCP answers 400 or 404 instead, and a client following
-    the spec treats anything but 405 as fatal — so without this the session ends
-    before the first tool call.
+    refuse `GET /mcp` with `405 Method Not Allowed`; a client then skips the
+    stream and carries on. FastMCP answers 400 or 404 instead, and a client
+    following the transport spec treats anything but 405 as fatal — so without
+    this the session ends before the first tool call. Answering here rather than
+    rewriting a forwarded status also covers `/mcp/`, which redirects with a 307
+    before any status worth rewriting exists.
 
-    The probe is answered here rather than forwarded and its status rewritten.
-    Forwarding means FastMCP allocates a transport session for every GET, and
-    nothing reclaims one that never completes a handshake: an unauthenticated
-    caller could open them until the process ran out of memory. It also means
-    `/mcp/` never reaches the rewrite at all, because the redirect to `/mcp`
-    answers first with a 307 the client is not expecting either.
+    Answering also avoids allocating a session per request for these methods.
+    That is a saving, **not a protection**: POST must pass through, because it
+    is how a session is created, and an unauthenticated garbage POST allocates a
+    transport that is never reclaimed just the same. Bounding that is FastMCP's
+    to do — its session manager takes an idle timeout that `http_app()` does not
+    expose — and reaching into the manager to set it would couple this to
+    internals that change between releases. It is recorded as a limitation
+    rather than papered over, and it is one more thing that authenticating the
+    agent-to-proxy hop would close.
     """
 
     _RESPONSE = (
         b'{"jsonrpc":"2.0","error":{"code":-32600,'
-        b'"message":"This server does not offer a GET event stream."},"id":null}'
+        b'"message":"This endpoint accepts POST, and DELETE for a session it '
+        b'issued."},"id":null}'
     )
 
     def __init__(self, app: ASGIApp) -> None:
@@ -214,7 +220,20 @@ class McpGetStatusCompat:
 
 def build_app() -> ASGIApp:
     """The ASGI application, wrapped in the compatibility shim."""
-    return McpGetStatusCompat(build_gateway().http_app(transport="streamable-http"))
+    return McpMethodCompat(build_gateway().http_app(transport="streamable-http"))
+
+
+def log_level() -> str:
+    """The configured level, or INFO. Empty is unset, as it is everywhere else."""
+    level = os.environ.get("RAIL_PROXY_LOG_LEVEL", "").strip().upper() or "INFO"
+    # `getLevelName` returns the number for a known name and the string
+    # "Level <name>" for anything else. `getLevelNamesMapping()` reads better
+    # and arrived in 3.11, above the floor this project supports and tests.
+    if not isinstance(logging.getLevelName(level), int):
+        logging.basicConfig(level="INFO", format=_LOG_FORMAT)
+        log.warning("RAIL_PROXY_LOG_LEVEL=%r is not a level; using INFO", level)
+        return "INFO"
+    return level
 
 
 def configure_logging() -> None:
@@ -223,15 +242,7 @@ def configure_logging() -> None:
     An unusable level is worth a complaint, not an exit: the proxy's job does
     not depend on it, and dying over a log setting loses the traffic too.
     """
-    level = os.environ.get("RAIL_PROXY_LOG_LEVEL", "").strip().upper() or "INFO"
-    # `getLevelName` returns the number for a known name and the string
-    # "Level <name>" for anything else. `getLevelNamesMapping()` would read
-    # better and arrived in 3.11, above the 3.10 floor this project declares.
-    if not isinstance(logging.getLevelName(level), int):
-        logging.basicConfig(level="INFO", format=_LOG_FORMAT)
-        log.warning("RAIL_PROXY_LOG_LEVEL=%r is not a level; using INFO", level)
-        return
-    logging.basicConfig(level=level, format=_LOG_FORMAT)
+    logging.basicConfig(level=log_level(), format=_LOG_FORMAT)
 
 
 async def main() -> int:
@@ -245,7 +256,7 @@ async def main() -> int:
         return 2
 
     bind = os.environ.get("RAIL_PROXY_BIND", "0.0.0.0")
-    raw_port = os.environ.get("RAIL_PROXY_PORT", "8091")
+    raw_port = os.environ.get("RAIL_PROXY_PORT", "").strip() or "8091"
     try:
         port = int(raw_port)
     except ValueError:
@@ -254,7 +265,11 @@ async def main() -> int:
 
     # uvicorn logs the bind once it has one. Announcing it here would name an
     # address the process may never get.
-    await uvicorn.Server(uvicorn.Config(app, host=bind, port=port)).serve()
+    # uvicorn installs its own loggers, so `basicConfig` alone leaves the access
+    # log and the startup lines at INFO whatever the variable said.
+    await uvicorn.Server(
+        uvicorn.Config(app, host=bind, port=port, log_level=log_level().lower())
+    ).serve()
     return 0
 
 

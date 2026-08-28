@@ -53,8 +53,9 @@ def agent_client(app) -> Client:
 @pytest.mark.asyncio
 async def test_the_upstreams_tools_reach_the_agent_namespaced(config, upstream):
     """Feature 1 and 4's first half: the agent sees what the upstream offers,
-    under the mount's name. `delivery_echo` is the string an agent is prompted
-    with, so the prefix is a contract and not a formatting detail."""
+    under the mount's name. The prefix is a contract, not a formatting detail —
+    it is the string an agent is prompted with — and the suffix is the stub's
+    tool, named after the host it was dialled at."""
     async with running_proxy() as app, agent_client(app) as client:
         tools = [t.name for t in await client.list_tools()]
 
@@ -74,7 +75,7 @@ async def test_a_tool_call_is_forwarded_and_its_answer_returned(config, upstream
     assert len(calls) == 1
     # The namespace is added on the way in and stripped on the way out. Asserting
     # only that a call happened would pass against a proxy forwarding
-    # `delivery_echo`, which no upstream would recognise.
+    # `delivery_upstream`, which no upstream would recognise.
     assert calls[0]["tool"] == "upstream"
     assert calls[0]["arguments"] == {"text": "hello"}
 
@@ -271,7 +272,7 @@ async def test_every_sessionless_method_is_answered_without_opening_a_session(
     assert response.status_code == 405
     assert response.headers["allow"] == "POST, DELETE"
     if method != "HEAD":
-        assert "does not offer a GET event stream" in response.text
+        assert "accepts POST" in response.text
 
 
 @pytest.mark.asyncio
