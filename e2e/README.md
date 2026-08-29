@@ -53,7 +53,13 @@ enough — the client echoes it on everything after.
 
 `--global-response-templating` is what keeps `expires_at` six hours ahead of
 now. A hardcoded stamp would pass today and fail silently on whatever day it
-went past.
+went past. The helper carries `timezone='UTC'` for a second reason: the `Z` in
+its format string is a literal rather than an offset, so without it the stamp
+renders in the container's local zone while claiming to be UTC. Any zone west
+of UTC−6 then hands the proxy a ticket that already expired, and the suite
+fails naming the proxy. `rail-center` runs at `TZ: Pacific/Honolulu` for that
+reason: on a default-UTC JVM the argument is unobservable and dropping it
+changes nothing, so the suite runs where dropping it fails.
 
 ## Three things about the assertions
 

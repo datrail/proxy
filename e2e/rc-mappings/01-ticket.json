@@ -7,6 +7,6 @@
   "response": {
     "status": 200,
     "headers": {"Content-Type": "application/json"},
-    "body": "{\"host_id\":\"{{request.query.host_id}}\",\"tickets\":[{\"agent_id\":\"agent-e2e\",\"sandbox_name\":\"e2e-sandbox\",\"token\":\"e2e-opaque-token\",\"expires_at\":\"{{now offset='6 hours' format=\"yyyy-MM-dd'T'HH:mm:ss'Z'\"}}\",\"posture_score\":90,\"tier\":\"green\"}]}"
+    "body": "{\"host_id\":\"{{request.query.host_id}}\",\"tickets\":[{\"agent_id\":\"agent-e2e\",\"sandbox_name\":\"e2e-sandbox\",\"token\":\"e2e-opaque-token\",\"expires_at\":\"{{now offset='6 hours' timezone='UTC' format=\"yyyy-MM-dd'T'HH:mm:ss'Z'\"}}\",\"posture_score\":90,\"tier\":\"green\"}]}"
   }
 }

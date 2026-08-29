@@ -42,6 +42,16 @@ services:
     <<: *wiremock
     volumes:
       - ./rc-mappings:/home/wiremock/mappings:ro
+    # Deliberately not UTC, and deliberately west of UTC−6. The ticket fixture
+    # renders expires_at with a literal `Z` in its format string, so the
+    # `timezone='UTC'` argument on the `now` helper is the only thing making the
+    # value mean what that `Z` claims. On a default-UTC JVM the argument is
+    # unobservable and deleting it leaves the suite green; from Honolulu,
+    # deleting it stamps a ticket four hours in the past and the registered
+    # proxy falls to x-rail-status: expired. This is the one input that makes
+    # the guard visible, so the suite supplies it.
+    environment:
+      TZ: Pacific/Honolulu
 
   # Stands in for an MCP server, and records every request so the driver can
   # assert on headers rather than on log output.
@@ -69,7 +79,6 @@ services:
       RAIL_CENTER_URL: http://rail-center:8080
       RAIL_HOST_ID: host-e2e
       RAIL_SANDBOX_NAME: not-a-registered-sandbox
-      RAIL_PROXY_REFRESH_SECONDS: "3600"
     depends_on:
       rail-center: {condition: service_healthy}
       upstream: {condition: service_healthy}
@@ -83,6 +92,29 @@ services:
     depends_on:
       upstream: {condition: service_healthy}
 
+  # The uid the image runs as, against the same build the three proxies use.
+  # This assertion is not in driver.sh with the others because it cannot be: the
+  # driver is a separate container and a uid is not visible across one, and
+  # reporting it from /health would be a production change made for a test.
+  #
+  # The healthcheck is the assertion, and the driver waiting on it is what makes
+  # it a gate — a wrong uid never reports healthy, so the run stops at
+  # "dependency failed to start" and the driver never executes. It sleeps rather
+  # than checking once and exiting because a container that exits trips
+  # --abort-on-container-exit, which tears the stack down before the driver has
+  # run at all.
+  image-user:
+    <<: *proxy
+    # Nothing to flush, and `sleep` does not handle SIGTERM — without this,
+    # teardown waits out the full stop grace period on every run.
+    command: ["sleep", "infinity"]
+    stop_grace_period: 0s
+    healthcheck:
+      test: ["CMD", "sh", "-c", "test \"$(id -u)\" = 10001"]
+      interval: 1s
+      timeout: 2s
+      retries: 3
+
   driver:
     image: curlimages/curl:8.11.1
     volumes:
@@ -92,3 +124,4 @@ services:
       proxy: {condition: service_healthy}
       proxy-unregistered: {condition: service_healthy}
       proxy-passthrough: {condition: service_healthy}
+      image-user: {condition: service_healthy}
