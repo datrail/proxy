@@ -1,0 +1,5 @@
+{
+  "priority": 5,
+  "request": {"method": "GET", "urlPath": "/mcp"},
+  "response": {"status": 405}
+}

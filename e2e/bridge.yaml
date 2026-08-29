@@ -1,0 +1,6 @@
+# The upstream list for every proxy in this stack. One entry: the WireMock
+# service standing in for an MCP server, which records what reached it.
+mcp:
+  servers:
+    - name: delivery
+      url: http://upstream:8080/mcp

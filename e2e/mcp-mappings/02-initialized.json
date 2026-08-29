@@ -1,0 +1,8 @@
+{
+  "priority": 1,
+  "request": {
+    "method": "POST", "urlPath": "/mcp",
+    "bodyPatterns": [{"matchesJsonPath": "$[?(@.method == 'notifications/initialized')]"}]
+  },
+  "response": {"status": 202}
+}

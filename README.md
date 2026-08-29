@@ -39,8 +39,11 @@ why there is none, never the value and never the Rail Center's address. It
 answers 200 whether or not a ticket is held, because failing closed is a
 designed state rather than a fault.
 
-Published as a container image at `ghcr.io/datrail/proxy`, with an SBOM and a
-signed build-provenance attestation on every release:
+Published as a container image at `ghcr.io/datrail/proxy`, with an SBOM on
+every release. A signed build-provenance attestation is attached where the
+repository is public — attestation requires that or GitHub Enterprise Cloud —
+and a release that cannot produce one warns rather than failing. Where there
+is an attestation to check:
 
 ```
 gh attestation verify oci://ghcr.io/datrail/proxy:latest --owner datrail
@@ -68,6 +71,17 @@ docker run -p 8091:8091 \
   -e RAIL_SANDBOX_NAME=agent-one \
   ghcr.io/datrail/proxy:latest
 ```
+
+`e2e/` runs the whole thing in containers — this proxy, a stubbed Rail Center
+and a stubbed upstream — and asserts what reached the wire. It needs nothing
+you do not already have:
+
+```
+docker compose -f e2e/compose.yml up --build --abort-on-container-exit --exit-code-from driver
+```
+
+See [e2e/README.md](e2e/README.md) for what it proves and what it deliberately
+leaves to the unit suite.
 
 Apache-2.0 — see [LICENSE](LICENSE) and [NOTICE](NOTICE). Sending a change:
 [CONTRIBUTING.md](CONTRIBUTING.md). Taking part:

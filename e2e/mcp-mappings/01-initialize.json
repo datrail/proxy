@@ -1,0 +1,12 @@
+{
+  "priority": 1,
+  "request": {
+    "method": "POST", "urlPath": "/mcp",
+    "bodyPatterns": [{"matchesJsonPath": "$[?(@.method == 'initialize')]"}]
+  },
+  "response": {
+    "status": 200,
+    "headers": {"Content-Type": "application/json", "Mcp-Session-Id": "e2e-upstream-session"},
+    "body": "{\"jsonrpc\":\"2.0\",\"id\":{{jsonPath request.body '$.id'}},\"result\":{\"protocolVersion\":\"{{jsonPath request.body '$.params.protocolVersion'}}\",\"capabilities\":{\"tools\":{\"listChanged\":false}},\"serverInfo\":{\"name\":\"e2e-upstream\",\"version\":\"0.0.1\"}}}"
+  }
+}
