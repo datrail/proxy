@@ -22,4 +22,7 @@ Released versions correspond to published images at `ghcr.io/datrail/proxy`.
   expiry, never the ticket and never the issuer's address.
 - `spec/ticket-fetch.schema.json`, pinning the fetch response this proxy parses.
 - `e2e/`: the stack in containers, asserting what reaches an upstream.
-- Container images with an SBOM and a signed build-provenance attestation.
+- Container images with an SBOM. A signed build-provenance attestation is
+  attached where the repository is public — attestation requires that or
+  GitHub Enterprise Cloud — and a release that cannot produce one warns
+  rather than failing.

@@ -39,8 +39,11 @@ why there is none, never the value and never the Rail Center's address. It
 answers 200 whether or not a ticket is held, because failing closed is a
 designed state rather than a fault.
 
-Published as a container image at `ghcr.io/datrail/proxy`, with an SBOM and a
-signed build-provenance attestation on every release:
+Published as a container image at `ghcr.io/datrail/proxy`, with an SBOM on
+every release. A signed build-provenance attestation is attached where the
+repository is public — attestation requires that or GitHub Enterprise Cloud —
+and a release that cannot produce one warns rather than failing. Where there
+is an attestation to check:
 
 ```
 gh attestation verify oci://ghcr.io/datrail/proxy:latest --owner datrail
