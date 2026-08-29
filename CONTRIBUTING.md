@@ -11,8 +11,11 @@ Open an issue first for anything beyond an obvious fix. Anything touching which 
 ```
 pip install -r requirements.txt -r requirements-test.txt -r requirements-dev.txt
 cp fastmcp_proxy/bridge.yaml.example fastmcp_proxy/bridge.yaml   # then edit it
-python -m fastmcp_proxy.proxy
+RAIL_TICKET_MODE=none python -m fastmcp_proxy.proxy
 ```
+
+`RAIL_TICKET_MODE` defaults to `enforce`, which needs a Rail Center to fetch a
+ticket from; `none` is how you run it with neither.
 
 `make test` runs the suite and `make lint` the linter; CI runs both. The proxy
 listens on `0.0.0.0:8091` by default, serving `POST /mcp` and `GET /health`.

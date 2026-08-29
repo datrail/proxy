@@ -18,8 +18,10 @@ import pytest
 from fastmcp_proxy.xrail_auth import (
     MAX_RESPONSE_BYTES,
     NoTicketAvailable,
+    TicketHolder,
     TicketSource,
     Token,
+    XRailInjector,
     check_lifetime,
     is_loopback,
     parse_expires_at,
@@ -104,9 +106,7 @@ async def test_the_single_entry_is_read_and_its_expiry_parsed():
 
 @pytest.mark.asyncio
 async def test_an_empty_list_is_authoritative_rather_than_an_error():
-    """The list is the complete answer for that host and sandbox. Treating an
-    empty one as a failure would let a caller keep a ticket Rail Center has
-    stopped issuing, which is the case the host-scoped route exists to prevent."""
+    """Authoritative rather than an error — `NoTicketAvailable` says why."""
     with pytest.raises(NoTicketAvailable) as info:
         await _source(_answers({"host_id": "e2e-host", "tickets": []})).fetch()
 
@@ -468,19 +468,6 @@ def test_a_credential_in_the_url_is_a_credential():
     assert plain.describe().endswith("(unauthenticated)")
 
 
-def test_two_credentials_are_a_configuration_error_rather_than_a_silent_choice():
-    """httpx builds Basic auth from userinfo and it overwrites the bearer header
-    this class sets, so the token would never leave the process while the
-    startup line said it had."""
-    with pytest.raises(ValueError, match="Configure one"):
-        TicketSource(
-            "https://svc:s3cret@rc.invalid",
-            host_id="h",
-            sandbox_name="s",
-            auth_token="rc_svc_x",
-        )
-
-
 @pytest.mark.parametrize(
     ("base", "expected"),
     [
@@ -575,6 +562,19 @@ def test_a_token_never_renders_itself():
     assert token_fingerprint(token.value) in repr(token)
     assert token.remaining(1_785_233_600.0) == 100.0
     assert token.remaining(1_785_233_800.0) == -100.0
+
+
+def test_a_ticket_stops_being_valid_at_its_expiry_and_not_after():
+    """`is_valid` is what `snapshot`, `status`, `next_refresh_delay` and both
+    branches of `refresh_once` key on, which makes it the one predicate a
+    fail-open would have to pass through — a lapsed ticket injected in place of
+    `x-rail-status`. `expires_at` is the moment it stops being valid, not the
+    last moment it is, and no grace is added to either side."""
+    token = Token("rc_ticket", 1500.0)
+
+    assert token.is_valid(1499.9)
+    assert not token.is_valid(1500.0)
+    assert not token.is_valid(1500.1)
 
 
 def test_an_implausible_lifetime_is_visible_without_being_refused(caplog):
@@ -690,9 +690,8 @@ def test_a_plaintext_fetch_is_reported_even_with_no_credential_to_protect():
 
 @pytest.mark.asyncio
 async def test_the_whole_exchange_is_bounded_not_each_read_of_it():
-    """`httpx.Timeout` is per-operation and its read budget re-arms on every
-    chunk, so an issuer dribbling a byte at a time is bounded only by the size
-    cap — and the listener is not bound until this returns."""
+    """One deadline over the whole exchange, not one per read. `_request` says
+    why the difference matters."""
     import asyncio
 
     async def dribble():
@@ -852,6 +851,16 @@ def test_a_password_with_no_username_is_still_a_credential():
         TicketSource("http://:s3cret@rc.invalid", host_id="h", sandbox_name="s")
 
 
+def test_a_username_with_no_password_is_still_a_credential():
+    """The mirror of the case above, and the one `proxy.build_gateway` calls out
+    by name: httpx derives Basic auth from `username or password`, so
+    `http://token@host` puts `Basic cmNfdG9rX2FiY2RlZjo=` on a plaintext wire
+    exactly as a named pair does. A guard reading only the password lets it
+    past, and the source then describes itself as unauthenticated."""
+    with pytest.raises(ValueError, match="in the clear"):
+        TicketSource("http://rc_tok_abcdef@rc.invalid", host_id="h", sandbox_name="s")
+
+
 def test_the_refusal_names_the_setting_that_carries_the_credential():
     """An operator told to fix `RAIL_AUTH_TOKEN` when the credential is in the
     URL is told to change a variable they never set."""
@@ -860,6 +869,25 @@ def test_the_refusal_names_the_setting_that_carries_the_credential():
 
     with pytest.raises(ValueError, match="RAIL_AUTH_TOKEN"):
         TicketSource("http://rc.invalid", host_id="h", sandbox_name="s", auth_token="t")
+
+
+@pytest.mark.parametrize(
+    "token",
+    ["rc_svc_LIVE-SECRET\nmore", "rc_svc_LIVE-SECRET\x00", "rc_svc_LIVE-SECRÉT"],
+    ids=["newline", "nul", "non-ascii"],
+)
+def test_a_token_that_cannot_be_a_header_is_refused_without_being_echoed(token):
+    """`auth_token()` only strips, so an internal newline in `RAIL_AUTH_TOKEN`
+    survives configuration and reaches h11 — whose `LocalProtocolError` renders
+    the whole value, at every refresh attempt for the life of the process.
+    `redact_credentials` cannot match a bare token, so that line is the
+    credential in the log."""
+    with pytest.raises(ValueError, match="not a valid header value") as info:
+        TicketSource(
+            "https://rc.invalid", host_id="h", sandbox_name="s", auth_token=token
+        )
+
+    assert "LIVE-SECR" not in str(info.value)
 
 
 @pytest.mark.asyncio
@@ -954,11 +982,11 @@ def test_every_constraint_the_parser_enforces_is_in_the_published_schema():
 
 @pytest.mark.asyncio
 async def test_a_failure_message_is_truncated_before_it_is_logged():
-    """The exception carries text the issuer chose. `report_ticket` renders it
-    into a warning, and a message the length of the response cap is a log line
-    nobody can read — and one that every stacked filter on the root handlers
-    then walks, which is why the bound is worth more than tidiness."""
-    from fastmcp_proxy import proxy as proxy_module
+    """The exception carries text the issuer chose. A refresh failure renders
+    it into a warning, and a message the length of the response cap is a log
+    line nobody can read — and one that every stacked filter on the root
+    handlers then walks, which is why the bound is worth more than tidiness."""
+    from fastmcp_proxy.xrail_auth import TicketHolder
 
     class _Loud(Exception):
         def __str__(self) -> str:
@@ -983,14 +1011,14 @@ async def test_a_failure_message_is_truncated_before_it_is_logged():
     handler = _Collect()
     logger.addHandler(handler)
     try:
-        await proxy_module.report_ticket(_Source())
+        await TicketHolder(_Source()).refresh_once()
     finally:
         logger.removeHandler(handler)
 
     # Lengths rather than the messages: a failure here would otherwise have
     # pytest render the whole oversized string it is complaining about.
     lengths = [len(r.getMessage()) for r in records]
-    assert any("could not fetch" in r.getMessage()[:80] for r in records)
+    assert any("ticket refresh failed" in r.getMessage()[:80] for r in records)
     assert max(lengths) < 500
 
 
@@ -1083,3 +1111,883 @@ def test_a_fingerprint_is_long_enough_to_tell_two_tickets_apart():
     one hex character, one pair in sixteen. A floor rather than a constant: a
     longer digest is only better at this."""
     assert len(token_fingerprint("anything")) >= 12
+
+
+# ─────────────────────────────────────────────────────────────────────
+#  Holding a ticket between requests
+# ─────────────────────────────────────────────────────────────────────
+
+
+class _Answers:
+    """A source that returns, or raises, whatever the test queued."""
+
+    def __init__(self, *answers):
+        self.answers = list(answers)
+        self.calls = 0
+
+    def describe(self):
+        return "https://rc.invalid/v1/tickets (unauthenticated)"
+
+    async def fetch(self):
+        self.calls += 1
+        answer = self.answers.pop(0) if self.answers else self.last
+        self.last = answer
+        if isinstance(answer, Exception):
+            raise answer
+        return answer
+
+
+def _ticket(value="rc_ticket", expires_at=2000.0):
+    return Token(value, expires_at)
+
+
+@pytest.mark.asyncio
+async def test_a_held_ticket_is_what_the_injector_reads():
+    holder = TicketHolder(_Answers(_ticket()), clock=lambda: 1000.0)
+    await holder.refresh_once()
+
+    assert holder.current == "rc_ticket"
+    assert holder.unavailable_reason is None
+
+
+@pytest.mark.asyncio
+async def test_a_transient_failure_keeps_a_ticket_that_is_still_valid():
+    """An issuer being briefly unreachable says nothing about whether this
+    proxy's identity is still good. Clearing on the first failed poll would
+    make a blip on Rail Center an outage for every agent behind a proxy."""
+    source = _Answers(_ticket(), httpx.ConnectError("no route"))
+    holder = TicketHolder(source, clock=lambda: 1000.0)
+
+    await holder.refresh_once()
+    assert await holder.refresh_once() is False
+
+    assert holder.current == "rc_ticket"
+    assert holder.unavailable_reason is None
+
+
+@pytest.mark.asyncio
+async def test_an_authoritative_empty_answer_clears_a_ticket_still_valid():
+    """The opposite of a failure — see `NoTicketAvailable`."""
+    source = _Answers(_ticket(), NoTicketAvailable("not-found", "none for that host"))
+    holder = TicketHolder(source, clock=lambda: 1000.0)
+
+    await holder.refresh_once()
+    await holder.refresh_once()
+
+    assert holder.current is None
+    assert holder.unavailable_reason == "not-found"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("answers", "now", "expected"),
+    [
+        ((httpx.ConnectError("x"),), 1000.0, "issuer-unreachable"),
+        ((_ticket(expires_at=1500.0),), 9000.0, "expired"),
+        ((NoTicketAvailable("not-found", ""),), 1000.0, "not-found"),
+    ],
+    ids=["never-answered", "lapsed", "authoritatively-none"],
+)
+async def test_the_three_reasons_are_told_apart(answers, now, expected):
+    """`x-rail-status` carries this verbatim, and the three call for different
+    responses: a wrong sandbox name, a dead refresh loop, and an issuer that is
+    down are not the same incident."""
+    holder = TicketHolder(_Answers(*answers), clock=lambda: now)
+    await holder.refresh_once()
+
+    assert holder.current is None
+    assert holder.unavailable_reason == expected
+
+
+@pytest.mark.asyncio
+async def test_a_recovered_ticket_clears_the_reason():
+    """A holder that answered `not-found` once must stop saying so the moment
+    Rail Center issues one, or the status header outlives the condition."""
+    source = _Answers(NoTicketAvailable("not-found", ""), _ticket())
+    holder = TicketHolder(source, clock=lambda: 1000.0)
+
+    await holder.refresh_once()
+    await holder.refresh_once()
+
+    assert holder.current == "rc_ticket"
+    assert holder.unavailable_reason is None
+
+
+def test_refresh_is_paced_by_the_tickets_own_life_not_the_configured_interval():
+    """A ticket shorter-lived than the interval must be replaced before it
+    lapses. Left to the configured hour, a five-minute ticket spends most of
+    its time expired and every call fails closed."""
+    holder = TicketHolder(_Answers(), refresh_seconds=3600.0, clock=lambda: 1000.0)
+    holder._ticket = _ticket(expires_at=1000.0 + 600)
+
+    assert holder.next_refresh_delay() == 300.0  # half of what is left
+
+
+def test_a_very_short_ticket_does_not_become_a_poll_loop():
+    """The floor is a safety property, not a preference: without it a
+    one-second ticket has every proxy in a fleet asking Rail Center twice a
+    second."""
+    holder = TicketHolder(_Answers(), clock=lambda: 1000.0)
+    holder._ticket = _ticket(expires_at=1000.5)
+
+    assert holder.next_refresh_delay() == TicketHolder.MIN_REFRESH_INTERVAL_SEC
+
+
+def test_the_floor_is_five_seconds_and_not_merely_a_floor():
+    """Every other assertion about the floor is written as a multiple of this
+    constant, so all of them move with it and a value lowered to 0.1 leaves
+    them green. That is the regression the class comment names: every proxy in
+    a fleet hammering Rail Center, which nothing local would notice.
+    `REFRESH_RATIO` is pinned absolutely below for the same reason."""
+    assert TicketHolder.MIN_REFRESH_INTERVAL_SEC == 5.0
+
+
+def test_a_long_ticket_is_still_refreshed_at_the_configured_interval():
+    """The configured value is an upper bound. A 30-day ticket left to half its
+    life would go a fortnight without the proxy noticing it was revoked."""
+    holder = TicketHolder(_Answers(), refresh_seconds=3600.0, clock=lambda: 1000.0)
+    holder._ticket = _ticket(expires_at=1000.0 + 30 * 86400)
+
+    assert holder.next_refresh_delay() == 3600.0
+
+
+@pytest.mark.asyncio
+async def test_repeated_failure_backs_off_rather_than_hammering_the_issuer():
+    """Failing closed is a reason to retry promptly, not forever at the floor:
+    a Rail Center that is down stays down while every proxy behind it asks."""
+    holder = TicketHolder(
+        _Answers(httpx.ConnectError("x")), refresh_seconds=3600.0, clock=lambda: 1000.0
+    )
+
+    delays = []
+    for _ in range(5):
+        await holder.refresh_once()
+        delays.append(holder.next_refresh_delay())
+
+    assert delays == sorted(delays)
+    assert delays[0] == TicketHolder.MIN_REFRESH_INTERVAL_SEC * 2
+    assert delays[-1] > delays[0]
+
+
+@pytest.mark.asyncio
+async def test_the_backoff_restarts_when_a_ticket_lapses_rather_than_carrying_over():
+    """Failures counted while a ticket was still valid do not enter the ramp at
+    all, so losing that ticket starts from the floor."""
+    now = 1000.0
+    source = _Answers(_ticket(expires_at=1500.0), *[httpx.ConnectError("x")] * 6)
+    holder = TicketHolder(source, refresh_seconds=3600.0, clock=lambda: now)
+
+    await holder.refresh_once()
+    for _ in range(5):  # fail repeatedly while the ticket is still valid
+        await holder.refresh_once()
+    assert holder.next_refresh_delay() > 0
+
+    now = 9000.0  # the ticket lapses
+    await holder.refresh_once()
+
+    assert holder.unavailable_reason == "expired"
+    assert holder.next_refresh_delay() == TicketHolder.MIN_REFRESH_INTERVAL_SEC * 2
+
+
+@pytest.mark.asyncio
+async def test_an_already_expired_ticket_is_reported_as_such_not_as_acquired(caplog):
+    """A ticket past its expiry is a well-formed answer, so it arrives on the
+    success path. Announcing it as acquired reports a dead identity as a
+    healthy one while injection is already failing closed."""
+    holder = TicketHolder(_Answers(_ticket(expires_at=1500.0)), clock=lambda: 9000.0)
+
+    with caplog.at_level("INFO"):
+        assert await holder.refresh_once() is True
+
+    logged = "\n".join(r.getMessage() for r in caplog.records)
+    assert "already-expired" in logged
+    assert "acquired" not in logged
+    assert holder.current is None
+
+
+@pytest.mark.asyncio
+async def test_the_status_reports_the_state_and_never_the_ticket():
+    """`/health` serves this, on an endpoint anything on the network can reach."""
+    holder = TicketHolder(_Answers(_ticket("rc_secret_ticket")), clock=lambda: 1000.0)
+    await holder.refresh_once()
+
+    status = holder.status
+
+    assert status["ticket_held"] is True
+    assert status["ticket_valid"] is True
+    assert status["expires_in_sec"] == 1000
+    assert status["fingerprint"] == token_fingerprint("rc_secret_ticket")
+    assert "rc_secret_ticket" not in repr(status)
+
+
+@pytest.mark.asyncio
+async def test_the_refresh_loop_stops_when_the_holder_is_closed():
+    """`asyncio.run` cancels a surviving task during interpreter shutdown, which
+    surfaces as a traceback on an otherwise clean SIGTERM."""
+    holder = TicketHolder(_Answers(_ticket()), clock=lambda: 1000.0)
+
+    import asyncio
+
+    await holder.start()
+    assert holder._task is not None
+    # Bounded: a close that does not cancel waits on a loop that never ends, and
+    # an unbounded assertion would hang the CI job rather than fail it.
+    await asyncio.wait_for(holder.aclose(), 5)
+
+    assert holder._task is None
+    await asyncio.wait_for(holder.aclose(), 5)  # idempotent
+
+
+def test_closing_a_holder_that_never_started_is_not_an_error():
+    """`main` closes in a `finally`, which runs whether or not `start` did."""
+    import asyncio as _asyncio
+
+    _asyncio.run(TicketHolder(_Answers()).aclose())
+
+
+# ─────────────────────────────────────────────────────────────────────
+#  Putting it on the request
+# ─────────────────────────────────────────────────────────────────────
+
+
+def _injected(ticket=None, reason=None) -> httpx.Request:
+    """One request through the injector, against a real holder.
+
+    A stub with the two answers set independently can hold a pair the state
+    machine cannot produce, and a test written against one proves less than it
+    looks like it does.
+    """
+    from tests.conftest import wound_holder
+
+    request = httpx.Request("POST", "https://gateway.invalid/mcp")
+    holder = wound_holder(ticket=ticket) if ticket else wound_holder(reason=reason)
+    next(XRailInjector(holder).auth_flow(request))
+    return request
+
+
+def test_the_reason_never_goes_in_the_ticket_header():
+    """That would turn absence into presence and make this component an author
+    of ticket content — a gateway reading `x-rail: expired` has been handed
+    something that looks like an identity."""
+    request = _injected(reason="expired")
+
+    assert "x-rail" not in request.headers
+    assert request.headers["x-rail-status"] == "expired"
+
+
+def test_a_ticket_and_a_status_are_never_both_present():
+    """A gateway seeing both has no way to decide which to believe."""
+    request = _injected(ticket="rc_ticket")
+
+    assert request.headers["x-rail"] == "rc_ticket"
+    assert "x-rail-status" not in request.headers
+
+
+def test_the_header_names_are_the_protocol_ones():
+    """The gateway looks for exactly these. A rename fails silently: injection
+    logs success, the gateway sees no `x-rail`, every call is refused, and
+    nothing names the cause."""
+    assert XRailInjector.HEADER == "x-rail"
+    assert XRailInjector.STATUS_HEADER == "x-rail-status"
+
+
+@pytest.mark.asyncio
+async def test_the_refresh_loop_keeps_fetching_after_the_first():
+    """The point of holding a ticket is that it is replaced before it lapses.
+    A loop that starts and never fetches again satisfies every other assertion
+    here, and the proxy fails closed for good the moment the first one expires."""
+    import asyncio
+
+    source = _Answers(_ticket("first"), _ticket("second"), _ticket("third"))
+    holder = TicketHolder(source, refresh_seconds=0.001, clock=lambda: 1000.0)
+    # Both under the floor on purpose, so the loop turns over inside the test
+    # rather than inside a sleep nobody waits out.
+    holder.MIN_REFRESH_INTERVAL_SEC = 0.001
+
+    await holder.start()
+    for _ in range(200):
+        await asyncio.sleep(0.005)
+        if source.calls >= 3:
+            break
+    await asyncio.wait_for(holder.aclose(), 5)
+
+    assert source.calls >= 3, f"the loop fetched {source.calls} times"
+    assert holder.current == "third"
+
+
+@pytest.mark.asyncio
+async def test_the_loop_survives_a_defect_in_its_own_body(caplog):
+    """A defect in the loop body must not end refreshing. `_refresh_loop` says
+    why."""
+    import asyncio
+
+    holder = TicketHolder(
+        _Answers(_ticket()), refresh_seconds=0.001, clock=lambda: 1000.0
+    )
+    holder.MIN_REFRESH_INTERVAL_SEC = 0.001
+    calls = {"n": 0}
+
+    async def sometimes_broken():
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RuntimeError("a defect, not a condition at the issuer")
+        return True
+
+    caplog.set_level("ERROR")
+    await holder.start()
+    holder.refresh_once = sometimes_broken
+    for _ in range(200):
+        await asyncio.sleep(0.005)
+        if calls["n"] >= 3:
+            break
+    await asyncio.wait_for(holder.aclose(), 5)
+
+    assert calls["n"] >= 3, "the loop stopped at the first exception"
+    assert any("retrying" in r.getMessage() for r in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_closing_does_not_re_raise_what_the_loop_died_of():
+    """`aclose` says why it never raises; this is the case that would."""
+    import asyncio
+
+    holder = TicketHolder(_Answers(_ticket()), clock=lambda: 1000.0)
+
+    async def dies():
+        raise RuntimeError("already dead")
+
+    holder._task = asyncio.get_running_loop().create_task(dies())
+    await asyncio.sleep(0)  # let it die
+
+    await asyncio.wait_for(holder.aclose(), 5)  # must not raise
+    assert holder._task is None
+
+
+@pytest.mark.asyncio
+async def test_an_authoritative_no_ticket_backs_off_like_a_failure():
+    """Re-asking faster will not change the answer. Left at the floor, an agent
+    with no registered ticket has every proxy in the fleet asking Rail Center
+    twelve times a minute, for ever."""
+    holder = TicketHolder(
+        _Answers(NoTicketAvailable("not-found", "")),
+        refresh_seconds=3600.0,
+        clock=lambda: 1000.0,
+    )
+
+    delays = []
+    for _ in range(4):
+        await holder.refresh_once()
+        delays.append(holder.next_refresh_delay())
+
+    assert delays[0] == TicketHolder.MIN_REFRESH_INTERVAL_SEC * 2
+    assert delays == sorted(delays)
+    assert delays[-1] > delays[0]
+
+
+def test_the_backoff_is_floored_as_well_as_capped():
+    """A configured interval under the floor must not become a poll loop.
+    `next_refresh_delay` says why the floor is not negotiable."""
+    holder = TicketHolder(_Answers(), refresh_seconds=0.5, clock=lambda: 1000.0)
+
+    assert holder._ticket is None
+    assert holder.next_refresh_delay() == TicketHolder.MIN_REFRESH_INTERVAL_SEC
+    holder._failures = 3
+    assert holder.next_refresh_delay() >= TicketHolder.MIN_REFRESH_INTERVAL_SEC
+
+
+def test_the_backoff_never_exceeds_the_configured_interval():
+    """The configured value is the upper bound it says it is. Unbounded, a down
+    issuer extends the identity outage past its own recovery."""
+    holder = TicketHolder(_Answers(), refresh_seconds=30.0, clock=lambda: 1000.0)
+    holder._failures = 20
+
+    assert holder.next_refresh_delay() == 30.0
+
+
+@pytest.mark.asyncio
+async def test_the_status_reports_every_state_it_claims_to():
+    """`/health` serves this, and it is the one diagnostic an operator reaches
+    for when the gateway starts denying. A field that is always None is worse
+    than an absent one: it reads as an answer."""
+    holder = TicketHolder(
+        _Answers(_ticket()), refresh_seconds=3600.0, clock=lambda: 1000.0
+    )
+
+    cold = holder.status
+    assert cold["ticket_held"] is False
+    assert cold["ticket_valid"] is False
+    assert cold["unavailable_reason"] == "issuer-unreachable"
+    assert cold["last_refresh_age_sec"] is None
+    assert cold["next_refresh_in_sec"] == TicketHolder.MIN_REFRESH_INTERVAL_SEC
+
+    await holder.refresh_once()
+    warm = holder.status
+    assert warm["ticket_held"] is True
+    assert warm["unavailable_reason"] is None
+    assert warm["last_refresh_age_sec"] == 0
+    assert warm["next_refresh_in_sec"] == 500  # half of what is left
+
+
+@pytest.mark.asyncio
+async def test_an_expired_ticket_is_not_reported_as_valid():
+    """`ticket_held` and `ticket_valid` are different questions. Reporting a
+    lapsed ticket as valid tells an operator the identity is fine while every
+    call fails closed."""
+    holder = TicketHolder(_Answers(_ticket(expires_at=1500.0)), clock=lambda: 9000.0)
+    await holder.refresh_once()
+
+    status = holder.status
+    assert status["ticket_held"] is True
+    assert status["ticket_valid"] is False
+    assert status["unavailable_reason"] == "expired"
+
+
+@pytest.mark.asyncio
+async def test_an_expired_ticket_does_not_stamp_the_last_good_refresh():
+    """`last_refresh_age_sec` is the age of the last *good* refresh, and a fetch
+    returning an already-lapsed ticket is not one. Stamped anyway, `/health`
+    reports an identity zero seconds old in the state an operator most needs to
+    catch — injection failing closed."""
+    holder = TicketHolder(_Answers(_ticket(expires_at=1500.0)), clock=lambda: 9000.0)
+
+    assert await holder.refresh_once() is True
+
+    assert holder.status["ticket_valid"] is False
+    assert holder.status["last_refresh_age_sec"] is None
+
+
+def test_the_status_never_names_the_rail_center():
+    """`/health` is on the listener the sandbox reaches for `/mcp`; `status`
+    says what that rules out."""
+    holder = TicketHolder(_Answers(), clock=lambda: 1000.0)
+
+    assert "source" not in holder.status
+    assert "rc.invalid" not in repr(holder.status)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "token",
+    [
+        "rc\nticket\ninjected",
+        "rc\rinjected",
+        "rc\x00injected",
+        "\ud800injected",
+        " injected",
+        "injected ",
+        "rc\x7finjected",
+    ],
+    ids=["lf", "cr", "nul", "surrogate", "leading-space", "trailing-space", "del"],
+)
+async def test_a_malformed_token_is_refused_at_the_fetch_without_being_echoed(token):
+    """The regex is asserted above; this is the rejection. Stored instead, a
+    surrogate takes `token_fingerprint` down with it — and the whole value
+    reaches a log through h11's own error."""
+    # `ensure_ascii=True` and raw content: httpx serialises `json=` without
+    # escaping, and a lone surrogate cannot be encoded as UTF-8 — the wire form
+    # an issuer would actually send is the escaped one.
+    body = json.dumps(_payload(token=token), ensure_ascii=True).encode()
+
+    with pytest.raises(ValueError, match="not a valid header value") as info:
+        await _source(lambda _r: httpx.Response(200, content=body)).fetch()
+
+    assert "injected" not in str(info.value)
+
+
+@pytest.mark.asyncio
+async def test_a_snapshot_never_carries_a_ticket_and_a_reason_together():
+    """Exactly one of the two, always. `snapshot` says why asking twice is not
+    the same question."""
+    holder = TicketHolder(_Answers(_ticket()), clock=lambda: 1000.0)
+
+    for _ in range(2):
+        ticket, reason = holder.snapshot()
+        assert (ticket is None) != (reason is None)
+        await holder.refresh_once()
+
+    ticket, reason = holder.snapshot()
+    assert (ticket is None) != (reason is None)
+
+
+def test_the_no_ticket_warning_is_not_once_per_request(caplog):
+    """Once per outage, not once per request. `XRailInjector._warned` says why
+    the sandbox must not be able to choose this process's log volume."""
+    from tests.conftest import wound_holder
+
+    injector = XRailInjector(wound_holder(reason="not-found"))
+
+    with caplog.at_level("WARNING"):
+        for _ in range(20):
+            next(injector.auth_flow(httpx.Request("POST", "https://gw.invalid/mcp")))
+
+    warnings = [r for r in caplog.records if "no valid ticket" in r.getMessage()]
+    assert len(warnings) == 1
+
+
+@pytest.mark.asyncio
+async def test_a_success_restarts_the_backoff_ramp():
+    """Failures counted *before* a ticket landed are discarded by the success,
+    so losing that ticket also starts from the floor."""
+    source = _Answers(
+        *[httpx.ConnectError("x")] * 6,
+        _ticket(expires_at=2000.0),
+        httpx.ConnectError("x"),
+    )
+    now = 1000.0
+    holder = TicketHolder(source, refresh_seconds=3600.0, clock=lambda: now)
+
+    for _ in range(6):
+        await holder.refresh_once()
+    at_the_ceiling = holder.next_refresh_delay()
+
+    await holder.refresh_once()  # a ticket lands
+    now = 9000.0  # it lapses, so the identity is lost again
+    await holder.refresh_once()  # and the issuer is still down
+
+    assert at_the_ceiling > TicketHolder.MIN_REFRESH_INTERVAL_SEC * 8
+    assert holder.unavailable_reason == "expired"
+    assert holder.next_refresh_delay() == TicketHolder.MIN_REFRESH_INTERVAL_SEC * 2
+
+
+@pytest.mark.asyncio
+async def test_a_stale_not_found_does_not_outlive_its_condition():
+    """`not-found` is Rail Center saying this agent has no ticket. Left set, a
+    later expiry is reported as one — conflating a dead refresh loop with an
+    identity that was never issued."""
+    source = _Answers(NoTicketAvailable("not-found", ""), _ticket(expires_at=2000.0))
+    now = 1000.0
+    holder = TicketHolder(source, clock=lambda: now)
+
+    await holder.refresh_once()
+    assert holder.unavailable_reason == "not-found"
+    await holder.refresh_once()
+    now = 9000.0  # the recovered ticket lapses
+
+    assert holder.unavailable_reason == "expired"
+
+
+@pytest.mark.asyncio
+async def test_an_issuer_that_stops_answering_stops_reporting_not_found():
+    """The two call for different responses — register the agent, or fix the
+    issuer. `refresh_once`'s generic-failure branch says why the older answer
+    stops being reported."""
+    source = _Answers(NoTicketAvailable("not-found", ""), httpx.ConnectError("x"))
+    holder = TicketHolder(source, clock=lambda: 1000.0)
+
+    await holder.refresh_once()
+    await holder.refresh_once()
+
+    assert holder.unavailable_reason == "issuer-unreachable"
+
+
+def test_the_backoff_ramp_is_capped_before_it_reaches_the_interval():
+    """Uncapped, ten consecutive failures put the next retry a full hour out at
+    the default interval — extending the identity outage past Rail Center's own
+    recovery."""
+    holder = TicketHolder(_Answers(), refresh_seconds=3600.0, clock=lambda: 1000.0)
+
+    holder._failures = 6
+    ceiling = holder.next_refresh_delay()
+    for failures in (7, 10, 40):
+        holder._failures = failures
+        assert holder.next_refresh_delay() == ceiling
+    assert ceiling == TicketHolder.MIN_REFRESH_INTERVAL_SEC * 64
+
+
+def test_a_second_outage_is_warned_about_like_the_first(caplog):
+    """Suppression is within one outage. Carried across a recovery, every
+    outage after the first is DEBUG only."""
+    from tests.conftest import wound_holder
+
+    injector = XRailInjector(wound_holder(reason="not-found"))
+
+    def once(holder):
+        injector.holder = holder
+        next(injector.auth_flow(httpx.Request("POST", "https://gw.invalid/mcp")))
+
+    with caplog.at_level("WARNING"):
+        once(wound_holder(reason="not-found"))
+        once(wound_holder(ticket="recovered"))
+        once(wound_holder(reason="not-found"))
+
+    warnings = [r for r in caplog.records if "no valid ticket" in r.getMessage()]
+    assert len(warnings) == 2
+
+
+def test_a_cold_status_reports_no_fingerprint_and_no_expiry():
+    """A monitor reading a fingerprint concludes an identity is held while
+    every call fails closed."""
+    holder = TicketHolder(_Answers(), clock=lambda: 1000.0)
+
+    assert holder.status["fingerprint"] is None
+    assert holder.status["expires_in_sec"] is None
+
+
+@pytest.mark.asyncio
+async def test_closing_waits_for_the_loop_it_cancelled():
+    """Cancelled and not awaited, the task is still pending when `asyncio.run`
+    tears the loop down, and that is the traceback on a clean SIGTERM."""
+    import asyncio
+
+    holder = TicketHolder(_Answers(_ticket()), clock=lambda: 1000.0)
+    await holder.start()
+    task = holder._task
+
+    await asyncio.wait_for(holder.aclose(), 5)
+
+    assert task is not None and task.done()
+
+
+@pytest.mark.asyncio
+async def test_a_cancel_aimed_at_the_caller_is_not_swallowed():
+    """Swallowed, a cancelled shutdown carries on as though it were clean."""
+    import asyncio
+    import contextlib
+    import sys
+
+    if sys.version_info < (3, 11):  # pragma: no cover - the floor cannot tell
+        pytest.skip("Task.cancelling() is 3.11+; the floor assumes the loop's own")
+
+    holder = TicketHolder(_Answers(_ticket()), clock=lambda: 1000.0)
+    await holder.start()
+    outcome = []
+
+    async def closer():
+        try:
+            await holder.aclose()
+        except asyncio.CancelledError:
+            outcome.append("propagated")
+            raise
+        outcome.append("swallowed")
+
+    task = asyncio.get_running_loop().create_task(closer())
+    await asyncio.sleep(0)
+    task.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await task
+
+    assert outcome == ["propagated"]
+
+
+@pytest.mark.asyncio
+async def test_a_rotation_is_announced_with_the_new_fingerprint(caplog):
+    """The ticket is never logged, but an operator still needs to see *that* it
+    changed — a silent rotation and a stuck one look identical from outside."""
+    source = _Answers(_ticket("first"), _ticket("second"), _ticket("second"))
+    holder = TicketHolder(source, clock=lambda: 1000.0)
+
+    with caplog.at_level("INFO"):
+        await holder.refresh_once()
+        await holder.refresh_once()
+        await holder.refresh_once()
+
+    logged = "\n".join(r.getMessage() for r in caplog.records)
+    assert "ticket acquired" in logged
+    assert "ticket rotated" in logged
+    assert token_fingerprint("second") in logged
+    assert "second" not in logged
+    # The third fetch returned the same value, so it is not a rotation.
+    assert logged.count("ticket rotated") == 1
+
+
+@pytest.mark.asyncio
+async def test_an_issuer_handing_out_expired_tickets_still_backs_off(caplog):
+    """A succeeding fetch that yields nothing usable is not a reason to stop
+    backing off — `_failures` says what the ramp measures."""
+    source = _Answers(_ticket(expires_at=1500.0))
+    holder = TicketHolder(source, refresh_seconds=3600.0, clock=lambda: 9000.0)
+
+    delays = []
+    for _ in range(4):
+        assert await holder.refresh_once() is True
+        delays.append(holder.next_refresh_delay())
+
+    assert holder.current is None
+    assert delays == sorted(delays)
+    assert delays[-1] > delays[0]
+
+
+@pytest.mark.asyncio
+async def test_a_failure_after_a_success_does_not_claim_nothing_was_ever_fetched():
+    """The line an operator reads to decide whether the agent was ever
+    registered. "No ticket has ever been fetched" sends them to check the
+    sandbox name; "nothing is held" sends them to the issuer. Both halves,
+    because a message that is always one of them tells nobody anything."""
+    import logging
+
+    records: list[logging.LogRecord] = []
+
+    class _Collect(logging.Handler):
+        def emit(self, record):
+            records.append(record)
+
+    logger = logging.getLogger("fastmcp_proxy.xrail")
+    handler = _Collect()
+    logger.addHandler(handler)
+    try:
+        # Cold: nothing has ever landed.
+        cold = TicketHolder(_Answers(httpx.ConnectError("x")), clock=lambda: 1000.0)
+        await cold.refresh_once()
+        first = "\n".join(r.getMessage() for r in records)
+        records.clear()
+
+        # Warm, then cleared by an authoritative empty answer, then a failure.
+        warm = TicketHolder(
+            _Answers(
+                _ticket(expires_at=2000.0),
+                NoTicketAvailable("not-found", ""),
+                httpx.ConnectError("x"),
+            ),
+            clock=lambda: 1000.0,
+        )
+        for _ in range(3):
+            await warm.refresh_once()
+        second = "\n".join(r.getMessage() for r in records)
+    finally:
+        logger.removeHandler(handler)
+
+    assert "no ticket has ever been fetched" in first
+    assert "nothing is held" in second
+    assert "never been fetched" not in second
+
+
+@pytest.mark.asyncio
+async def test_an_authoritative_no_ticket_names_the_pair_it_asked_about():
+    """`not-found` means one of the two keys is wrong, and which one is the
+    whole of what an operator can act on."""
+    with pytest.raises(NoTicketAvailable) as info:
+        await _source(_answers({"host_id": "e2e-host", "tickets": []})).fetch()
+
+    assert "e2e-host" in str(info.value)
+    assert "e2e-sandbox" in str(info.value)
+
+
+@pytest.mark.asyncio
+async def test_the_loop_sleeps_before_it_fetches():
+    """`start` has already fetched once. Fetching again immediately makes every
+    proxy in a fleet issue two back-to-back requests at boot, the second one
+    bypassing the floor."""
+    import asyncio
+
+    source = _Answers(_ticket(), _ticket(), _ticket())
+    holder = TicketHolder(source, refresh_seconds=3600.0, clock=lambda: 1000.0)
+
+    await holder.start()
+    assert source.calls == 1
+    await asyncio.sleep(0.02)
+    assert source.calls == 1, "the loop fetched without waiting"
+    await asyncio.wait_for(holder.aclose(), 5)
+
+
+def test_two_credentials_are_refused_before_the_plaintext_guard_speaks():
+    """Told to fix the plaintext first, an operator sets the override, retries,
+    and only then meets the real fault — a bearer that never leaves the process
+    while every log line says it did."""
+    with pytest.raises(ValueError, match="Configure one"):
+        TicketSource(
+            "http://svc:s3cret@rc.invalid",
+            host_id="h",
+            sandbox_name="s",
+            auth_token="rc_svc_x",
+        )
+
+
+@pytest.mark.asyncio
+async def test_an_expired_answer_does_not_discard_a_ticket_that_is_still_good(caplog):
+    """A failed fetch keeps a valid ticket, so a *successful* one returning an
+    already-lapsed ticket must not be what discards it — that fails closed for
+    whatever life the held one had left."""
+    now = 2000.0
+    source = _Answers(_ticket("good", expires_at=5000.0), _ticket("stale", 1500.0))
+    holder = TicketHolder(source, clock=lambda: now)
+
+    await holder.refresh_once()
+    now = 2600.0
+    with caplog.at_level("WARNING"):
+        assert await holder.refresh_once() is True
+
+    assert holder.current == "good"
+    assert holder.unavailable_reason is None
+    assert "keeping the one held" in caplog.text
+    # Neither counter moves: an identity is held, and nothing good came back.
+    # A ramp that climbed here would put the first retry after the good ticket
+    # finally lapses at the ceiling, and `/health` would report the age of a
+    # refresh that produced nothing usable as though it had.
+    assert holder._failures == 0
+    assert holder.status["last_refresh_age_sec"] == 600
+
+
+@pytest.mark.asyncio
+async def test_a_transient_failure_leaves_the_ramp_alone_while_a_ticket_holds(caplog):
+    """The other half of the same rule, and the line that tells the two apart."""
+    source = _Answers(_ticket("good", expires_at=5000.0), httpx.ConnectError("x"))
+    holder = TicketHolder(source, clock=lambda: 2000.0)
+
+    await holder.refresh_once()
+    with caplog.at_level("WARNING"):
+        await holder.refresh_once()
+
+    assert holder.current == "good"
+    assert holder._failures == 0
+    assert "keeping the ticket held until it expires" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_clearing_a_held_ticket_is_said_out_loud(caplog):
+    """An authoritative empty answer discards an identity that was working. An
+    operator reading "none was held" would not know one had just gone."""
+    source = _Answers(_ticket(expires_at=5000.0), NoTicketAvailable("not-found", ""))
+    holder = TicketHolder(source, clock=lambda: 2000.0)
+
+    await holder.refresh_once()
+    with caplog.at_level("WARNING"):
+        await holder.refresh_once()
+
+    assert "cleared the one held" in caplog.text
+
+
+def test_the_plaintext_warning_renders_the_url_without_its_credential(caplog):
+    """The one rendering site of `url` rather than `safe_url` that is reached
+    with a credential in the URL — the override path, where the operator has
+    already said to send it anyway."""
+    with caplog.at_level("WARNING"):
+        TicketSource(
+            "http://svc:s3cret@rc.invalid",
+            host_id="h",
+            sandbox_name="s",
+            allow_insecure_credential=True,
+        )
+
+    assert "plaintext http" in caplog.text
+    assert "s3cret" not in caplog.text
+    assert "rc.invalid" in caplog.text
+
+
+def test_the_injector_reads_the_holder_once_not_twice():
+    """Wall time is not monotonic, and this module uses it because an expiry is
+    an absolute instant. Asked twice across a clock that steps backwards, the
+    two questions disagree and the header value is None."""
+    ticks = iter([2000.0, 2000.0, 1000.0, 1000.0, 1000.0])
+    holder = TicketHolder(_Answers(), clock=lambda: next(ticks))
+    holder._ticket = Token("t", 1500.0)  # lapsed at 2000, live again at 1000
+
+    request = httpx.Request("POST", "https://gw.invalid/mcp")
+    next(XRailInjector(holder).auth_flow(request))
+
+    written = [h for h in ("x-rail", "x-rail-status") if h in request.headers]
+    assert len(written) == 1
+    assert request.headers[written[0]] is not None
+
+
+def test_an_upstream_password_with_no_username_is_a_credential_too():
+    """`urlsplit("https://:s3cret@h/").username` is the empty string, so a guard
+    reading only the username lets the one-part form past."""
+    from urllib.parse import urlsplit as _split
+
+    from fastmcp_proxy import proxy as proxy_module
+
+    parts = _split("https://:s3cret@gateway.invalid/mcp")
+    assert not parts.username
+    assert parts.password
+    assert bool(parts.username or parts.password)
+    assert proxy_module._in_the_clear("http://gateway.invalid/mcp") is True

@@ -110,14 +110,24 @@ def upstream(monkeypatch):
     handler = _upstream_handler(seen)
 
     def factory(**kwargs):
-        return httpx.AsyncClient(
+        # Through the production factory, not around it: that is where
+        # `follow_redirects=False` is applied, and a test client built beside it
+        # would not carry what the real one does.
+        return proxy_module.upstream_client(
             transport=httpx.MockTransport(handler), **_client_kwargs(kwargs)
         )
 
     original = proxy_module.StreamableHttpTransport
 
     def patched(*args, **kwargs):
-        kwargs.setdefault("httpx_client_factory", factory)
+        # Checked, then replaced. Replacing it unconditionally would mask a
+        # mount that stopped passing one: the suite would keep injecting a
+        # client with the right settings while production built one with
+        # fastmcp's — redirects followed, ambient proxies honoured.
+        assert kwargs.get("httpx_client_factory") is proxy_module.upstream_client, (
+            "the mount is not building its client through `upstream_client`"
+        )
+        kwargs["httpx_client_factory"] = factory
         return original(*args, **kwargs)
 
     monkeypatch.setattr(proxy_module, "StreamableHttpTransport", patched)
@@ -154,6 +164,8 @@ _RAIL_ENVIRONMENT = (
     "RAIL_SANDBOX_NAME",
     "RAIL_AUTH_MODE",
     "RAIL_AUTH_TOKEN",
+    "RAIL_TICKET_MODE",
+    "RAIL_PROXY_REFRESH_SECONDS",
     "RAIL_PROXY_TICKET_TIMEOUT_SECONDS",
     "RAIL_PROXY_MAX_TICKET_LIFETIME_SECONDS",
     "RAIL_PROXY_ALLOW_INSECURE_CREDENTIAL",
@@ -162,6 +174,12 @@ _RAIL_ENVIRONMENT = (
     "RAIL_PROXY_LOG_LEVEL",
     "RAIL_PROXY_UPSTREAM_TIMEOUT_SECONDS",
     "RAIL_PROXY_CONFIG_FILE",
+    # Not RAIL_*, but read on the same path: `_exchange` builds its SSL context
+    # with `trust_env=True` even behind a MockTransport, so a shell pointing
+    # these at a bundle this machine does not have turns a fifth of the suite
+    # red for a reason unrelated to the code.
+    "SSL_CERT_FILE",
+    "SSL_CERT_DIR",
 )
 
 
@@ -178,6 +196,49 @@ ONE_UPSTREAM = (
 
 
 @pytest.fixture
-def config(write_config):
-    """One upstream, named `delivery`."""
+def config(write_config, monkeypatch):
+    """One upstream, named `delivery`, and a proxy that attaches nothing.
+
+    `RAIL_TICKET_MODE=none` because the default is `enforce`, which requires a
+    Rail Center: a proxy configured only far enough to forward has to say that
+    forwarding unstamped is what it meant. Tests about the ticket set the mode
+    themselves.
+    """
+    monkeypatch.setenv("RAIL_TICKET_MODE", "none")
     return write_config(ONE_UPSTREAM)
+
+
+class _NeverAsked:
+    """A ticket source these tests never let anything call."""
+
+    def describe(self) -> str:
+        return "https://rc.invalid/v1/tickets (unauthenticated)"
+
+    async def fetch(self):  # pragma: no cover - reaching this is the bug
+        raise AssertionError("this holder was wound by hand; nothing should fetch")
+
+
+def wound_holder(*, ticket: str | None = None, reason: str | None = None):
+    """A real `TicketHolder` in a decided state, for tests about what goes out.
+
+    A stub with `current` and `unavailable_reason` set independently can hold a
+    pair the real state machine cannot produce — a ticket *and* a reason, or
+    neither — so a test written against one proves less than it appears to.
+    This winds the real object instead, and every read goes through the code
+    under test.
+    """
+    from fastmcp_proxy.xrail_auth import TicketHolder, Token
+
+    now = 1_000_000.0
+    holder = TicketHolder(_NeverAsked(), clock=lambda: now)
+    if ticket is not None and reason is not None:
+        raise AssertionError("a holder has a ticket or a reason, never both")
+    if ticket is not None:
+        holder._ticket = Token(ticket, now + 1800)
+    elif reason == "expired":
+        holder._ticket = Token("a-ticket-that-lapsed", now - 1)
+    elif reason == "not-found":
+        holder._no_ticket_reason = "not-found"
+    elif reason not in (None, "issuer-unreachable"):
+        raise AssertionError(f"no way to reach {reason!r} through the real object")
+    return holder
