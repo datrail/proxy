@@ -26,6 +26,9 @@ allowed_match() {
     /home/agent)
       [[ -z "$after" || "$after" == /* ]] || return 1
       case "$path" in tests/*|tests-python/*) return 0 ;; esac ;;
+    /home/wiremock)
+      [[ -z "$after" || "$after" == /* ]] || return 1
+      case "$path" in e2e/compose.yml) return 0 ;; esac ;;
     aizawa-metrics.internal)
       [[ "$path" == tools/agent-environment-scanner/scan_agent_environment.py &&
         "$before" == *'called `'
@@ -143,6 +146,9 @@ self_test() (
   check_case agent-at-sign tests/fixture.py '/home/agent@evil/project' 1 'tests/fixture.py:1:/home/agent' || return
   check_case agent-root tests/fixture.py '/home/agent' 0 '' || return
   check_case agent-path tests/fixture.py '/home/agent/project' 0 '' || return
+  check_case wiremock-fixture e2e/compose.yml '/home/wiremock/mappings' 0 '' || return
+  check_case wiremock-wrong-context tests/fixture.py '/home/wiremock/mappings' 1 'tests/fixture.py:1:/home/wiremock' || return
+  check_case wiremock-concatenated e2e/compose.yml '/home/wiremockevil/mappings' 1 'e2e/compose.yml:1:/home/wiremockevil' || return
   check_case a-developer-root tests/fixture.py '/home/a-developer' 1 'tests/fixture.py:1:/home/a-developer' || return
   check_case a-developer-path tests/fixture.py '/home/a-developer/project' 1 'tests/fixture.py:1:/home/a-developer' || return
   check_case a-developer-punctuation tests/fixture.py '/home/a-developer+evil/project' 1 'tests/fixture.py:1:/home/a-developer' || return
