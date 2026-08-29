@@ -3,11 +3,11 @@
 The proxy is a sidecar: one process serves one agent, mounting the upstreams
 named in its config file and re-exposing their tools under a namespace.
 
-Attaching the `x-rail` ticket to an outbound request is the point of the
-component and is not implemented here. What this module holds is the path a
-request travels, the configuration behind it, and the startup fetch that says
-whether a ticket could be obtained at all. What it enforces is the boundary: no
-header the agent supplies reaches an upstream.
+What this module holds is the path a request travels, the configuration behind
+it, and the wiring that puts this proxy's own `x-rail` ticket on everything it
+forwards. Obtaining and holding that ticket is `xrail_auth`'s.
+
+It is also the boundary: no header the agent supplies reaches an upstream.
 """
 
 from __future__ import annotations
@@ -16,14 +16,14 @@ import asyncio
 import logging
 import math
 import os
-import re
 import sys
-import time
 import traceback
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
+import httpx
 import yaml
 from fastmcp import Client, FastMCP
 from fastmcp.client.transports import StreamableHttpTransport
@@ -32,9 +32,11 @@ from starlette.responses import JSONResponse
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 from fastmcp_proxy.xrail_auth import (
-    NoTicketAvailable,
+    TicketHolder,
     TicketSource,
-    token_fingerprint,
+    XRailInjector,
+    is_loopback,
+    redact_credentials,
 )
 
 DEFAULT_CONFIG_FILE = Path(__file__).resolve().parent / "bridge.yaml"
@@ -59,6 +61,11 @@ def config_file() -> Path:
     """
     raw = os.environ.get("RAIL_PROXY_CONFIG_FILE", "").strip()
     return Path(raw) if raw else DEFAULT_CONFIG_FILE
+
+
+#: What an upstream entry may set. Anything else is refused rather than
+#: ignored — see the rejection in the loop below.
+_SERVER_KEYS = {"name", "url"}
 
 
 def load_servers() -> list[dict[str, Any]]:
@@ -100,6 +107,25 @@ def load_servers() -> list[dict[str, Any]]:
     servers = []
     for entry in entries:
         if isinstance(entry, dict) and entry.get("name") and entry.get("url"):
+            extra = set(entry) - _SERVER_KEYS
+            if extra:
+                # Said out loud rather than refused. `headers:` is how every
+                # mainstream MCP client config spells an upstream credential, so
+                # an operator will write it and this proxy will drop it — every
+                # call to that upstream 401s, and the cause belongs in the log.
+                #
+                # A warning and not a `ConfigError`, because the keys that
+                # actually appear are inert: `transport: streamable_http` names
+                # the only transport this proxy speaks. Refusing to start over
+                # a key that changes nothing is a worse outcome for an operator
+                # than the silence it was meant to fix.
+                log.warning(
+                    "%s: upstream '%s' sets %s, which this proxy does not read "
+                    "— only `name` and `url`",
+                    path,
+                    entry["name"],
+                    ", ".join(f"`{key}`" for key in sorted(extra)),
+                )
             servers.append(entry)
             continue
         # Announced rather than dropped quietly: `urls:` for `url:` is a typo
@@ -135,6 +161,20 @@ def load_servers() -> list[dict[str, Any]]:
                 f"{path}: upstream {entry['name']!r} has no http:// or https:// "
                 f"scheme: {url!r}"
             )
+        try:
+            urlsplit(url)
+        except ValueError:
+            # The scheme check passes an unbalanced IPv6 literal —
+            # `http://[::1:8080/mcp` — and `build_gateway` then parses the same
+            # string outside any handler, which is the traceback-and-exit-1 the
+            # comment above says this loop exists to prevent. The exception is
+            # not rendered: `urlsplit` puts the netloc in its message for a
+            # value that fails NFKC normalisation, and that netloc is where a
+            # url password lives.
+            raise ConfigError(
+                f"{path}: upstream {entry['name']!r} has a url that cannot be "
+                f"parsed: {_clip(url)}"
+            ) from None
     return servers
 
 
@@ -145,33 +185,43 @@ def load_servers() -> list[dict[str, Any]]:
 _AUTH_MODES = {"none", "bearer"}
 
 
+#: The three that name where a ticket comes from. All of them, or none.
+_TICKET_SETTINGS = ("RAIL_CENTER_URL", "RAIL_HOST_ID", "RAIL_SANDBOX_NAME")
+
+
+def _naming_variables() -> tuple[dict[str, str], list[str], list[str]]:
+    """The three, split into what carries a value and what does not.
+
+    Every message about them names the variables it is talking about. An
+    operator reading a container log has no way to see which of three they got
+    wrong, and "a Rail Center is misconfigured" sends them to check all of it.
+    """
+    values = {name: os.environ.get(name, "").strip() for name in _TICKET_SETTINGS}
+    return (
+        values,
+        [name for name, value in values.items() if value],
+        [name for name, value in values.items() if not value],
+    )
+
+
 def ticket_settings() -> dict[str, str] | None:
     """Where this proxy's ticket comes from, or None if it has no control plane.
 
     All three together, or none. `TicketSource` says why the sandbox name is not
     optional.
     """
-    url = os.environ.get("RAIL_CENTER_URL", "").strip()
-    host = os.environ.get("RAIL_HOST_ID", "").strip()
-    sandbox = os.environ.get("RAIL_SANDBOX_NAME", "").strip()
-    if not any((url, host, sandbox)):
+    values, named, missing = _naming_variables()
+    if not named:
         return None
-
-    missing = [
-        name
-        for name, value in (
-            ("RAIL_CENTER_URL", url),
-            ("RAIL_HOST_ID", host),
-            ("RAIL_SANDBOX_NAME", sandbox),
-        )
-        if not value
-    ]
     if missing:
         raise ConfigError(
-            "a Rail Center is partly configured; these are also required: "
-            + ", ".join(missing)
+            "a Rail Center is partly configured; also required: " + ", ".join(missing)
         )
-    return {"url": url, "host_id": host, "sandbox_name": sandbox}
+    return {
+        "url": values["RAIL_CENTER_URL"],
+        "host_id": values["RAIL_HOST_ID"],
+        "sandbox_name": values["RAIL_SANDBOX_NAME"],
+    }
 
 
 def auth_token() -> str | None:
@@ -207,18 +257,81 @@ def allow_insecure_credential() -> bool:
 
     Off by default. Loopback and https need no override; this is for a
     plaintext, non-loopback issuer — a container reaching
-    `http://host.docker.internal:…`, say, where the request crosses a virtual
-    network other containers sit on.
+    `http://host.docker.internal:…`, say, which `is_loopback` deliberately does
+    not exempt.
     """
     raw = os.environ.get("RAIL_PROXY_ALLOW_INSECURE_CREDENTIAL", "").strip().lower()
     return raw in ("1", "true", "yes")
 
 
+#: Platform-wide rather than `RAIL_PROXY_*`: it describes the whole chain's
+#: posture, and the prefix claims only knobs this component owns alone.
+_TICKET_MODES = ("none", "observe", "enforce")
+
+
+def ticket_mode() -> str:
+    """Whether this proxy attaches an identity to what it forwards.
+
+    Defaults to `enforce`, so absence is the safe state. The proxy implements
+    two of the three values: it attaches nothing under `none` and attaches under
+    both `observe` and `enforce` — what separates observing from enforcing is
+    decided downstream, on a header this component has already sent. Reading a
+    subset of a platform vocabulary is how `RAIL_AUTH_MODE` already works here.
+
+    An unrecognised value exits 2 rather than falling back, so a binary meeting
+    a vocabulary it does not know fails loudly instead of degrading into the
+    permissive state.
+    """
+    mode = os.environ.get("RAIL_TICKET_MODE", "").strip().lower() or "enforce"
+    if mode not in _TICKET_MODES:
+        raise ConfigError(
+            f"RAIL_TICKET_MODE={mode!r} is not one of {', '.join(_TICKET_MODES)}"
+        )
+    return mode
+
+
+def refresh_seconds() -> float:
+    """Upper bound between refreshes.
+
+    Only an upper bound: a ticket's own expiry drives the real cadence, so this
+    caps a long-lived one rather than setting the interval.
+    """
+    return _seconds("RAIL_PROXY_REFRESH_SECONDS", 3600.0)
+
+
 def build_ticket_source() -> TicketSource | None:
-    """The source this proxy fetches its own ticket from, or None."""
-    settings = ticket_settings()
-    if settings is None:
+    """The source this proxy fetches its own ticket from, or None.
+
+    The mode and the issuer are cross-checked both ways. A proxy that means to
+    attach with nothing to fetch from would otherwise come up healthy and
+    forward every call unstamped; `none` beside a configured Rail Center is
+    contradictory intent, and guessing which half was meant is not this
+    component's call.
+    """
+    mode = ticket_mode()
+    _, named, missing = _naming_variables()
+
+    # The mode is read before the settings are, so `none` beside a *partly*
+    # configured Rail Center reports the contradiction rather than the
+    # incompleteness — an operator who set one variable by accident is not
+    # being asked to finish the job.
+    if mode == "none":
+        if named:
+            raise ConfigError(
+                "RAIL_TICKET_MODE=none attaches nothing, but "
+                + ", ".join(named)
+                + " is set — one of the two was not meant"
+            )
         return None
+    if missing:
+        raise ConfigError(
+            f"RAIL_TICKET_MODE={mode!r} attaches an identity, so a Rail Center "
+            "to fetch one from is required; not set: "
+            + ", ".join(missing)
+            + ". To forward without one, set RAIL_TICKET_MODE=none."
+        )
+    # `missing` is empty, so this returns the dict rather than None.
+    settings = ticket_settings()
     try:
         return TicketSource(
             settings["url"],
@@ -303,80 +416,46 @@ def _clip(value: object, limit: int = 80) -> str:
     — a hand-edited YAML with a pasted blob in it should not produce a message
     nobody can read.
 
-    Redacted before it is cut, not after — `_USERINFO` needs the closing `@`,
-    and a url password is comfortably long enough to be truncated across it.
+    Redacted before it is cut, not after; `TicketHolder.refresh_once` says why.
     """
-    text = _redact(repr(value))
+    text = redact_credentials(repr(value))
     return text if len(text) <= limit else text[:limit] + "…"
 
 
-#: `scheme://` then everything up to the last `@` of an authority — greedy, so
-#: a password containing its own `@` is taken whole rather than left with its
-#: tail in the line.
-#:
-#: **Why this is matched on text rather than on a url object:** the messages
-#: that carry a credential are written by libraries that never hand one over.
-#: httpx logs `HTTP Request: %s %s …` at INFO, once per request, with the whole
-#: url among the arguments — so the leak is at request rate, and redacting only
-#: where this module formats a url would miss all of it.
-#:
-#: The scheme run is length-bounded, and `_redact` returns early on text with no
-#: `://` in it at all. `[\w+.-]*://` is quadratic on a string that never
-#: satisfies it — every start position tries every length — and this runs on
-#: every record, on the loop that serves every mount. A record can carry text an
-#: untrusted sandbox chose: the MCP transport logs a rejected `Content-Type`
-#: verbatim, and its logger propagates to root. With the run bounded, both
-#: quantifiers are, and the match is linear in the length of the line.
-_USERINFO = re.compile(r"(?P<scheme>[a-zA-Z][\w+.-]{0,30}://)[^/\s]*@")
-
-
-def _redact(text: str) -> str:
-    """Remove userinfo from any url in a log message.
-
-    `user:pass@host` is how httpx is told to send Basic auth to an upstream, so
-    a credential there is a working configuration rather than a mistake.
-    """
-    # An early out rather than a guard: with the scheme run bounded the match
-    # is already linear, and most records have no url in them at all.
-    if "://" not in text:
-        return text
-    return _USERINFO.sub(r"\g<scheme>***@", text)
-
-
 class RedactingFilter(logging.Filter):
-    """Applies `_redact` to every record, whoever emitted it.
+    """Applies `redact_credentials` to every record, whoever emitted it.
 
     The template and each argument are redacted **in place, one at a time**, and
-        an argument that did not change keeps its original object. Both halves are
-        load-bearing, and each is the fix for a way of getting this wrong.
+    an argument that did not change keeps its original object. Both halves are
+    load-bearing, and each is the fix for a way of getting this wrong.
 
-        Rendering an argument is what finds the credential: httpx passes the url as
-        an argument and passes it as an `httpx.URL`, whose `str` is the whole thing,
-        so a test for `isinstance(str)` walks straight past it. Exceptions arrive
-        the same way, in `msg` and in `args` both.
+    Rendering an argument is what finds the credential: httpx passes the url as
+    an argument and passes it as an `httpx.URL`, whose `str` is the whole thing,
+    so a test for `isinstance(str)` walks straight past it. Exceptions arrive
+    the same way, in `msg` and in `args` both.
 
-        Replacing the record with one rendered string is what must not happen.
-        `uvicorn.logging.AccessFormatter` unpacks `record.args` into exactly five
-        values, and an access line *does* carry userinfo whenever a caller asks for
-        one — the query string goes in undecoded, so `POST /mcp?cb=https://a:b@x/`
-        is enough. Collapse on redaction and the untrusted sandbox can drop its own
-        request from the access log, and turn one request into fifteen lines of
-        `--- Logging error ---`, by choosing a query.
+    Replacing the record with one rendered string is what must not happen.
+    `uvicorn.logging.AccessFormatter` unpacks `record.args` into exactly five
+    values, and an access line *does* carry userinfo whenever a caller asks for
+    one — the query string goes in undecoded, so `POST /mcp?cb=https://a:b@x/`
+    is enough. Collapse on redaction and the untrusted sandbox can drop its own
+    request from the access log, and turn one request into fifteen lines of
+    `--- Logging error ---`, by choosing a query.
 
-        A traceback is handled too, because `Formatter.format` builds one from
-        `exc_info` *after* every filter has run and appends it to the line — so a
-        credential removed from the message is printed in full two lines below.
-        Filling `exc_text` is what a stock formatter reads instead of building its
-        own; where that is not enough, `exc_info` is dropped, which is the only way
-        to stop a handler that renders the traceback itself. That costs a rich
-        rendering in exactly the case where the traceback holds a secret.
+    A traceback is handled too, because `Formatter.format` builds one from
+    `exc_info` *after* every filter has run and appends it to the line — so a
+    credential removed from the message is printed in full two lines below.
+    Filling `exc_text` is what a stock formatter reads instead of building its
+    own; where that is not enough, `exc_info` is dropped, which is the only way
+    to stop a handler that renders the traceback itself. That costs a rich
+    rendering in exactly the case where the traceback holds a secret.
 
-        **It never raises, and it fails closed.** `Handler.handle` guards `emit`
-        and not `filter`, and `Logger.callHandlers` guards neither, so anything
-        raised here would surface inside whatever called `log.info` — on a request
-        path, in library code this repository does not own; a `%`-format mismatch in
-        any dependency is enough. A record that could not be redacted is a record
-        that might hold a credential, so it is replaced rather than passed on.
+    **It never raises, and it fails closed.** `Handler.handle` guards `emit`
+    and not `filter`, and `Logger.callHandlers` guards neither, so anything
+    raised here would surface inside whatever called `log.info` — on a request
+    path, in library code this repository does not own; a `%`-format mismatch in
+    any dependency is enough. A record that could not be redacted is a record
+    that might hold a credential, so it is replaced rather than passed on.
     """
 
     def filter(self, record: logging.LogRecord) -> bool:
@@ -402,7 +481,7 @@ class RedactingFilter(logging.Filter):
         if value is None or isinstance(value, (int, float, complex)):
             return value
         text = value if isinstance(value, str) else str(value)
-        redacted = _redact(text)
+        redacted = redact_credentials(text)
         return redacted if redacted != text else value
 
     @classmethod
@@ -412,17 +491,21 @@ class RedactingFilter(logging.Filter):
             record.args = tuple(cls._redact_value(a) for a in record.args)
         elif isinstance(record.args, Mapping):
             # `logging` accepts a single mapping for `%(name)s` formatting.
-            # Rebuilt only if something in it changed, because rebuilding turns
-            # a mapping that answers for missing keys into one that raises.
+            # Rebuilt only where something in it changed: rebuilding turns a
+            # mapping that answers for missing keys — a `defaultdict`, say —
+            # into a plain dict that raises, so this leaves one intact on every
+            # record that carried no credential and replaces it on the records
+            # that did. The outcome is narrowed to those rather than avoided;
+            # nothing in this process passes a mapping at all.
             redacted = {k: cls._redact_value(v) for k, v in record.args.items()}
             if any(redacted[k] is not v for k, v in record.args.items()):
                 record.args = redacted
 
         if record.exc_text:
-            record.exc_text = _redact(record.exc_text)
+            record.exc_text = redact_credentials(record.exc_text)
         elif isinstance(record.exc_info, tuple):
             rendered = "".join(traceback.format_exception(*record.exc_info))
-            record.exc_text = _redact(rendered)
+            record.exc_text = redact_credentials(rendered)
             if record.exc_text != rendered:
                 # A handler that renders from `exc_info` itself would print the
                 # original. Nothing here can sanitise the exception, so the one
@@ -432,17 +515,98 @@ class RedactingFilter(logging.Filter):
                 record.exc_info = None
 
 
-def build_gateway() -> FastMCP:
+def _in_the_clear(url: str) -> bool:
+    """True where a request to `url` crosses a network unencrypted."""
+    parts = urlsplit(url)
+    return parts.scheme != "https" and not is_loopback(parts.hostname)
+
+
+def upstream_client(**kwargs: Any) -> httpx.AsyncClient:
+    """The client every mount dials its upstream with.
+
+    Three overrides. Two are about where the ticket may end up — it is on every
+    request this client sends, so anything that changes the destination hands it
+    to a host the config did not name — and the third puts back what turning the
+    second one off would otherwise take away.
+
+    **`follow_redirects=False`.** fastmcp hard-codes it to True and offers no way
+    to turn it off, and httpx strips only `Authorization` when it re-sends a
+    request to a new origin — so an upstream answering
+    `307 Location: https://elsewhere/` receives `x-rail` verbatim, at an address
+    chosen by the thing this proxy is standing in front of. A redirect surfaces
+    as a failed call instead, which is the right outcome: an MCP endpoint that
+    has moved is a configuration change, not something to follow at runtime.
+
+    **`trust_env=False`, and `verify` built with it left on.** `HTTP_PROXY` and
+    its neighbours would otherwise route every forwarded call through a host an
+    environment variable names; `_exchange` refuses the same thing for the same
+    reason, and says it at length. The one flag governs both proxies and CA
+    roots, so the context is built separately — otherwise shutting out the first
+    would also shut out `SSL_CERT_FILE`.
+    """
+    return httpx.AsyncClient(
+        **{
+            **kwargs,
+            "follow_redirects": False,
+            "trust_env": False,
+            "verify": httpx.create_ssl_context(trust_env=True),
+        }
+    )
+
+
+def build_gateway(holder: TicketHolder | None) -> FastMCP:
     """Mount every configured upstream under one endpoint.
 
     A mount's name becomes the prefix on every tool it re-exposes, so the
     agent sees `<name>_<tool>`.
+
+    `holder` is None under `RAIL_TICKET_MODE=none`, and then nothing is
+    attached to what goes out — not `x-rail`, and not `x-rail-status` either.
+    That is a different state from failing closed, where a proxy that means to
+    identify its agent could not: pass-through says nothing about identity at
+    all, and writing a status header would claim it had tried.
     """
     gateway = FastMCP(name="datrail-proxy")
     timeout = upstream_timeout()
+    injector = XRailInjector(holder) if holder is not None else None
+    # Read once, at build time. Per request it would be an environment lookup
+    # on the hot path, and a route that could raise a ConfigError into a 500
+    # long after startup — `ticket_mode` raises on a value it does not know.
+    mode = ticket_mode()
 
     for srv in load_servers():
-        transport = StreamableHttpTransport(url=srv["url"])
+        parts = urlsplit(srv["url"])
+        if injector is not None and (parts.username or parts.password):
+            # `username or password`, matching httpx: it derives Basic auth from
+            # either, so `https://token@host/` is as much a credential as
+            # `https://u:p@host/`. Reading only the password lets the one-part
+            # form past — which is the same mistake `TicketSource` documents on
+            # the fetch leg.
+            #
+            # Refused rather than warned, because the injector is the client's
+            # `auth` and httpx derives Basic auth only when there is none: left
+            # alone this credential is silently dropped and every call to the
+            # upstream 401s with nothing naming the cause.
+            raise ConfigError(
+                f"upstream '{srv['name']}' carries a credential in its url, "
+                "which cannot be sent while an x-rail ticket is being attached "
+                "— remove it, or set RAIL_TICKET_MODE=none"
+            )
+        if injector is not None and _in_the_clear(srv["url"]):
+            # Not a refusal: an http upstream on a private network is an
+            # ordinary deployment, and the packaged example is one. But the
+            # ticket goes out on every forwarded call, so an operator should
+            # know it is readable — the same fact `TicketSource` refuses over
+            # for a credential it is *sending*.
+            log.warning(
+                "'%s' is plaintext http — the x-rail ticket is readable by "
+                "anyone on the path to %s",
+                srv["name"],
+                srv["url"],
+            )
+        transport = StreamableHttpTransport(
+            url=srv["url"], auth=injector, httpx_client_factory=upstream_client
+        )
         proxy = create_proxy(
             Client(transport, timeout=timeout, init_timeout=timeout),
             name=f"proxy-{srv['name']}",
@@ -467,12 +631,22 @@ def build_gateway() -> FastMCP:
 
     @gateway.custom_route("/health", methods=["GET"])
     async def health(_request):
-        """Liveness only: the process is up and its config parsed.
+        """The process is up, its config parsed, and what it holds by way of
+        an identity.
 
-        It reports nothing about whether a ticket is held. Anything waiting on
-        this to decide an agent may start is waiting on the wrong signal.
+        **200 whether or not a ticket is held**, deliberately. Failing closed is
+        a designed state and not a fault: the proxy is serving correctly, and
+        restarting it does not make an unreachable Rail Center reachable. A
+        health check that killed the process here would turn one outage into a
+        crash loop. `ticket` is where the state is, for a reader that wants it.
         """
-        return JSONResponse({"status": "ok"})
+        return JSONResponse(
+            {
+                "status": "ok",
+                "ticket_mode": mode,
+                "ticket": holder.status if holder is not None else None,
+            }
+        )
 
     return gateway
 
@@ -542,7 +716,7 @@ class McpMethodCompat:
         await send({"type": "http.response.body", "body": self._RESPONSE})
 
 
-def build_app() -> ASGIApp:
+def build_app(holder: TicketHolder | None) -> ASGIApp:
     """The ASGI application, wrapped in the compatibility shim.
 
     Stateless: no session is created, so none can be exhausted. A stateful
@@ -554,7 +728,7 @@ def build_app() -> ASGIApp:
     resumption, which needs an event store this does not configure.
     """
     return McpMethodCompat(
-        build_gateway().http_app(transport="streamable-http", stateless_http=True)
+        build_gateway(holder).http_app(transport="streamable-http", stateless_http=True)
     )
 
 
@@ -621,68 +795,18 @@ def _install_redaction() -> None:
                 handler.addFilter(RedactingFilter())
 
 
-async def report_ticket(source: TicketSource | None) -> None:
-    """Fetch this proxy's ticket once and say what came back.
-
-    The result is logged and nothing else: no request carries the ticket. Doing
-    it at startup is what makes a wrong sandbox name or a rejected credential
-    something an operator sees while they are watching.
-
-    Never fatal, which is why the source is built by the caller rather than
-    here: an issuer that is merely down is a normal condition and the proxy
-    serves without a ticket, while a configuration that could not be right is
-    refused before anything is served. Building it here would put both outcomes
-    behind the same handler and exit 1 on a traceback for the second.
-    """
-    if source is None:
-        log.info("no Rail Center configured — no ticket will be fetched")
-        return
-
-    log.info("fetching this proxy's ticket from %s", source.describe())
-    try:
-        ticket = await source.fetch()
-    except NoTicketAvailable as exc:
-        log.warning("no ticket held: %s", exc)
-        return
-    except Exception as exc:
-        # Redacted before it is truncated, for the reason `_clip` gives; an
-        # `HTTPStatusError` renders the whole url. Truncated rather than
-        # clipped, because `_clip` goes through `repr` — the wrong shape for a
-        # sentence an operator reads. A timeout's message is empty, so the type
-        # has to carry the line alone.
-        detail = _redact(str(exc))[:300]
-        log.warning(
-            "could not fetch a ticket (%s)",
-            f"{type(exc).__name__}: {detail}" if detail else type(exc).__name__,
-        )
-        return
-
-    now = time.time()
-    fingerprint = token_fingerprint(ticket.value)
-    if not ticket.is_valid(now):
-        # An expired ticket is a well-formed answer, so it arrives here rather
-        # than as an error. Reporting it as held would announce a dead identity
-        # as a healthy one, in the one log line this fetch exists to produce.
-        log.warning(
-            "ticket held but already expired (fingerprint=%s, expired %.0fs ago)",
-            fingerprint,
-            -ticket.remaining(now),
-        )
-        return
-    log.info(
-        "ticket held (fingerprint=%s, expires in %.0fs)",
-        fingerprint,
-        ticket.remaining(now),
-    )
-
-
 async def main() -> int:
     import uvicorn
 
     configure_logging()
     try:
-        app = build_app()
-        ticket_source = build_ticket_source()
+        source = build_ticket_source()
+        holder = (
+            TicketHolder(source, refresh_seconds=refresh_seconds())
+            if source is not None
+            else None
+        )
+        app = build_app(holder)
     except ConfigError as exc:
         log.error("%s", exc)
         return 2
@@ -701,7 +825,14 @@ async def main() -> int:
         log.error("RAIL_PROXY_PORT is out of range: %d", port)
         return 2
 
-    await report_ticket(ticket_source)
+    if holder is None:
+        log.info("RAIL_TICKET_MODE=none — nothing is attached to what is forwarded")
+    else:
+        # Awaited, so a wrong sandbox name or a rejected credential shows up
+        # while an operator is watching. Never fatal, and the wait is bounded by
+        # RAIL_PROXY_TICKET_TIMEOUT_SECONDS — the port is not open until it
+        # returns.
+        await holder.start()
 
     # uvicorn logs the bind once it has one. Announcing it here would name an
     # address the process may never get.
@@ -713,6 +844,12 @@ async def main() -> int:
             host=bind,
             port=port,
             log_level=log_level().lower(),
+            # `proxy_headers` defaults on, and `forwarded_allow_ips` defaults to
+            # 127.0.0.1 — which in a sidecar is the sandbox. Left alone, the
+            # agent chooses the client address and scheme in this process's own
+            # access log by sending `X-Forwarded-For`. Nothing in front of this
+            # proxy terminates TLS for it; the sandbox connects to it directly.
+            proxy_headers=False,
             # Filtered again below: this constructor runs `dictConfig`, which
             # creates `uvicorn` and `uvicorn.access` with fresh handlers and
             # `propagate = False`, after `configure_logging` has walked
@@ -730,7 +867,14 @@ async def main() -> int:
         )
     )
     _install_redaction()
-    await server.serve()
+    try:
+        await server.serve()
+    finally:
+        # The refresh loop outlives `serve()` otherwise, and asyncio.run then
+        # cancels it during interpreter shutdown — which surfaces as a
+        # traceback on a clean SIGTERM.
+        if holder is not None:
+            await holder.aclose()
     return 0
 
 

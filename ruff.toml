@@ -8,7 +8,7 @@
 # The two ignores are load-bearing, and the cheap way of checking says they are
 # not: `--config 'lint.ignore=[]'` merges rather than replaces, so it reports a
 # clean tree either way. Deleting the block from this file and running
-# `ruff check` is the test that answers — it finds six.
+# `ruff check` is the test that answers.
 
 # The lowest interpreter this project supports, not the one the image ships.
 # The target must track the floor: set it higher and `ruff check --fix` rewrites
@@ -17,11 +17,15 @@
 target-version = "py310"
 
 [lint]
-# BLE001 (blind `except Exception`) is off by decision, not oversight.
-# `report_ticket` catches everything because the startup fetch is never fatal —
-# the proxy serves without a ticket, and an issuer can fail in as many ways as
-# httpx, json and asyncio have exceptions. Narrowing it would change behaviour
-# under cover of a style fix.
+# BLE001 (blind `except Exception`) is off by decision, not oversight, at each
+# of its three sites. `TicketHolder.refresh_once` catches everything because
+# refreshing is never fatal — the proxy serves without a ticket, and an issuer
+# can fail in as many ways as httpx, json and asyncio have exceptions.
+# `TicketHolder.aclose` catches everything the refresh loop failed with, because
+# it is called from a `finally` and must not replace a shutdown with the
+# traceback of a task nobody awaited. `RedactingFilter.filter`
+# catches everything because it must never raise into the call that logged.
+# Narrowing any of them would change behaviour under cover of a style fix.
 #
 # TRY004 (prefer TypeError for an invalid type) is wrong here. Every site it
 # fires on is validating a response from another service — a non-ISO

@@ -1,7 +1,8 @@
-# The image needs the package and its dependency list. Everything else in the
-# repository is for developing it, and shipping documentation into a runtime
-# image puts it where `docker export` can read it long after the repository has
-# moved on.
+# The image needs the package and its dependency list, and nothing else in the
+# repository — the rest is for developing it, and shipping documentation into a
+# runtime image puts it where `docker export` can read it long after the
+# repository has moved on. LICENSE and NOTICE are the deliberate exception; the
+# Dockerfile says why they travel with the distribution.
 *
 !requirements.txt
 !fastmcp_proxy/

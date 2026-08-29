@@ -133,8 +133,8 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           sbom: true
           # buildx would attach its own *unsigned* provenance, which the signed
-          # attestation below makes redundant — the org's docker-build-push
-          # action documents that same choice and lands on leaving this off.
+          # attestation below makes redundant. Off, so the image carries one
+          # provenance record rather than two with different trust in them.
           provenance: false
           # Scope the cache so a second build job added to this repo later does
           # not silently share one `buildkit` scope with this one. A literal

@@ -1,4 +1,4 @@
-# The proxy, as the agent zone runs it.
+# The proxy, as it is deployed: one container per agent, alongside it.
 #
 # bridge.yaml is not in the image: .dockerignore keeps it out and only
 # bridge.yaml.example ships, so a container without a mounted config stops at

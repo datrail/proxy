@@ -12,6 +12,13 @@
 #   RAIL_PROXY_UPSTREAM_TIMEOUT_SECONDS              (30)
 #       How long a call waits on an upstream before the agent is told it timed
 #       out.
+#   RAIL_TICKET_MODE         none | observe | enforce (enforce)
+#       Whether this proxy attaches an identity to what it forwards. `none`
+#       attaches neither header; the other two attach `x-rail` when a ticket is
+#       held and `x-rail-status` when one could not be got. Cross-checked
+#       against the three variables below, both ways: a mode that attaches with
+#       no Rail Center to fetch from stops at startup, and so does `none`
+#       beside one that is configured.
 #
 # Where a Rail Center issues this proxy a ticket, three name it — all three
 # together, or none:
@@ -20,15 +27,19 @@
 #   RAIL_HOST_ID             the host this proxy runs on
 #   RAIL_SANDBOX_NAME        the agent sandbox it serves
 #
-# and five more govern how it is fetched. `RAIL_AUTH_TOKEN` is required under
+# and these govern how it is fetched. `RAIL_AUTH_TOKEN` is required under
 # `RAIL_AUTH_MODE=bearer` and ignored otherwise, and the override below does
 # nothing unless a credential exists to send:
 #
 #   RAIL_AUTH_MODE           none | bearer            (none)
 #   RAIL_AUTH_TOKEN          no default; `bearer` without one is refused
 #   RAIL_PROXY_TICKET_TIMEOUT_SECONDS                (10)
-#       Bounds the startup fetch, which runs before the port is bound — so it
-#       also bounds how long an unreachable Rail Center delays that.
+#       Bounds each fetch, the one at startup included — and that one runs
+#       before the port is bound, so it also bounds how long an unreachable
+#       Rail Center delays that.
+#   RAIL_PROXY_REFRESH_SECONDS                       (3600)
+#       Upper bound between refreshes, not the interval — a ticket's own expiry
+#       is what sets the cadence.
 #   RAIL_PROXY_MAX_TICKET_LIFETIME_SECONDS           (no bound)
 #       Refuse a ticket claiming a longer life than this.
 #   RAIL_PROXY_ALLOW_INSECURE_CREDENTIAL             (false)

@@ -15,6 +15,18 @@ import sys
 import pytest
 
 from fastmcp_proxy import proxy as proxy_module
+from fastmcp_proxy.xrail_auth import token_fingerprint
+
+
+async def _hold(source):
+    """What `main` does with a source: hold it, and fetch once.
+
+    `TicketHolder.start()` also launches the refresh loop, which a test would
+    then have to cancel; `refresh_once` is the half these assertions are about.
+    """
+    holder = proxy_module.TicketHolder(source)
+    await holder.refresh_once()
+    return holder
 
 
 def test_a_missing_config_file_is_reported_by_path(write_config, monkeypatch, tmp_path):
@@ -113,6 +125,57 @@ def test_an_unusable_url_is_reported_rather_than_raised_from_the_mount(
         proxy_module.load_servers()
 
 
+def test_an_unparseable_url_is_reported_rather_than_raised_from_the_build(
+    write_config, monkeypatch
+):
+    """`http://[::1:8080/mcp` passes the scheme check and dies in `urlsplit`,
+    which `build_gateway` calls outside any handler — a traceback and exit 1
+    where the file's other mistakes give a sentence and exit 2."""
+    monkeypatch.setenv("RAIL_TICKET_MODE", "none")
+    write_config(
+        'mcp:\n  servers:\n    - name: delivery\n      url: "http://[::1:8080/mcp"\n'
+    )
+
+    with pytest.raises(proxy_module.ConfigError, match="cannot be parsed"):
+        proxy_module.load_servers()
+
+    with pytest.raises(proxy_module.ConfigError, match="cannot be parsed"):
+        proxy_module.build_app(None)
+
+
+def test_an_unparseable_url_never_echoes_its_credential(write_config):
+    """The refusal renders the url, and a url carries a password. `urlsplit`'s
+    own message would too: it puts the netloc in it for a value that fails NFKC
+    normalisation."""
+    write_config(
+        "mcp:\n  servers:\n    - name: paid\n"
+        '      url: "http://svc:s3cret@[::1:8080/mcp"\n'
+    )
+
+    with pytest.raises(proxy_module.ConfigError) as info:
+        proxy_module.load_servers()
+
+    assert "s3cret" not in str(info.value)
+
+
+def test_a_python_tag_is_refused_rather_than_constructed(write_config):
+    """`safe_load` is the one property that makes reading an operator-supplied
+    file safe. `yaml.load` and `yaml.unsafe_load` construct arbitrary Python
+    from a `!!python/...` tag, so anyone who can write this file — or mount it
+    — runs code in this process, and every other assertion here stays green.
+
+    The tag resolves to a function rather than calling one: a test that pins
+    arbitrary execution must not perform it to find out."""
+    write_config(
+        "mcp:\n  servers:\n"
+        "    - name: delivery\n      url: http://upstream.invalid/mcp\n"
+        "pwn: !!python/name:os.system\n"
+    )
+
+    with pytest.raises(proxy_module.ConfigError, match="not valid YAML"):
+        proxy_module.load_servers()
+
+
 def test_usable_entries_survive_alongside_unusable_ones(write_config):
     write_config(
         "mcp:\n"
@@ -194,7 +257,22 @@ def test_every_resolvable_level_is_one_uvicorn_can_use():
     "port", ["0", "-1", "70000"], ids=["zero", "negative", "too-big"]
 )
 async def test_a_port_outside_the_range_is_reported(config, monkeypatch, port):
-    """Every one of these is reported rather than left to `bind()`."""
+    """Every one of these is reported rather than left to `bind()`.
+
+    The server is stubbed even though this test expects never to reach it: `0`
+    binds an ephemeral port, so a regression here would start a real listener
+    and serve for ever — a hung CI job rather than a red one.
+    """
+    import uvicorn
+
+    class _NeverStarted:
+        def __init__(self, config):
+            raise AssertionError("the port check let a listener through")
+
+        async def serve(self):  # pragma: no cover
+            raise AssertionError
+
+    monkeypatch.setattr(uvicorn, "Server", _NeverStarted)
     monkeypatch.setenv("RAIL_PROXY_PORT", port)
 
     assert await proxy_module.main() == 2
@@ -281,6 +359,12 @@ async def test_the_settings_reach_uvicorn(config, monkeypatch):
     The log level in particular: uvicorn installs its own loggers, so a level
     that does not reach this config leaves the access log and the startup lines
     at INFO whatever the variable said.
+
+    `proxy_headers` is not an accessor but belongs here for the same reason: it
+    defaults on, `forwarded_allow_ips` defaults to 127.0.0.1 — which in a
+    sidecar is the sandbox — and nothing terminates TLS in front of this
+    listener. Left on, the agent chooses the client address and scheme in this
+    process's own access log by sending `X-Forwarded-For`.
     """
     monkeypatch.setenv("RAIL_PROXY_BIND", "  127.0.0.1  ")
     monkeypatch.setenv("RAIL_PROXY_PORT", " 9099 ")
@@ -297,6 +381,8 @@ async def test_the_settings_reach_uvicorn(config, monkeypatch):
                 port=config.port,
                 log_level=config.log_level,
                 app=config.app,
+                proxy_headers=config.proxy_headers,
+                forwarded_allow_ips=config.forwarded_allow_ips,
             )
 
         async def serve(self):
@@ -313,6 +399,8 @@ async def test_the_settings_reach_uvicorn(config, monkeypatch):
     # reach — and every end-to-end test builds the app itself, so none of them
     # would notice.
     assert isinstance(captured["app"], proxy_module.McpMethodCompat)
+    assert captured["proxy_headers"] is False
+    assert "*" not in captured["forwarded_allow_ips"]
     # Installed by `main`, not left over from a test that called
     # `configure_logging` itself — hence the handlers cleared above. Without
     # this the container runs with no redaction at all, and httpx puts the whole
@@ -403,7 +491,7 @@ async def test_a_blank_port_falls_back_rather_than_failing_to_parse(
     ],
 )
 def test_a_credential_in_a_url_is_redacted_from_any_message(message, expected):
-    assert proxy_module._redact(message) == expected
+    assert proxy_module.redact_credentials(message) == expected
 
 
 def test_an_entry_missing_a_key_is_announced_rather_than_dropped(write_config, caplog):
@@ -434,9 +522,11 @@ def test_two_upstreams_cannot_share_a_namespace(write_config):
         proxy_module.load_servers()
 
 
-def test_no_rail_center_configured_is_a_supported_state(no_rail_center):
+def test_no_rail_center_configured_is_a_supported_state(monkeypatch):
     """An open-source deployment with no control plane. The proxy forwards and
-    fetches nothing."""
+    fetches nothing — but it has to say so, because the default attaches."""
+    monkeypatch.setenv("RAIL_TICKET_MODE", "none")
+
     assert proxy_module.ticket_settings() is None
     assert proxy_module.build_ticket_source() is None
 
@@ -550,10 +640,9 @@ async def test_a_startup_fetch_reports_a_fingerprint_and_never_the_ticket(
     body = json.loads(
         (_pathlib.Path(__file__).parent / "fixtures" / "tickets.json").read_text()
     )
-    # `report_ticket` reads the wall clock, and the fixture names a fixed
-    # instant. Left alone, this lands on the expired branch and the success
-    # branch — the one whose whole contract is "a fingerprint, never the
-    # ticket" — is never reached at all.
+    # The holder reads the wall clock, and the fixture names a fixed instant.
+    # Left alone this lands on the already-expired branch, and the one whose
+    # whole contract is "a fingerprint, never the ticket" is never reached.
     body["tickets"][0]["expires_at"] = "2099-01-01T00:00:00Z"
     monkeypatch.setenv("RAIL_CENTER_URL", "https://rc.invalid")
     monkeypatch.setenv("RAIL_HOST_ID", "e2e-host")
@@ -570,12 +659,12 @@ async def test_a_startup_fetch_reports_a_fingerprint_and_never_the_ticket(
     monkeypatch.setattr(proxy_module, "TicketSource", recording)
 
     with caplog.at_level("INFO"):
-        await proxy_module.report_ticket(proxy_module.build_ticket_source())
+        await _hold(proxy_module.build_ticket_source())
 
     logged = "\n".join(r.getMessage() for r in caplog.records)
-    assert "ticket held (" in logged
+    assert "ticket acquired (" in logged
     assert body["tickets"][0]["token"] not in logged
-    assert proxy_module.token_fingerprint(body["tickets"][0]["token"]) in logged
+    assert token_fingerprint(body["tickets"][0]["token"]) in logged
 
 
 @pytest.mark.asyncio
@@ -602,9 +691,9 @@ async def test_an_issuer_that_is_down_does_not_stop_startup(
     monkeypatch.setattr(proxy_module, "TicketSource", failing)
 
     with caplog.at_level("WARNING"):
-        await proxy_module.report_ticket(proxy_module.build_ticket_source())
+        await _hold(proxy_module.build_ticket_source())
 
-    assert any("could not fetch a ticket" in r.getMessage() for r in caplog.records)
+    assert any("ticket refresh failed" in r.getMessage() for r in caplog.records)
 
 
 @pytest.mark.asyncio
@@ -631,9 +720,9 @@ async def test_a_bad_ticket_configuration_exits_2_like_every_other(
     config, no_rail_center, monkeypatch, env, expected
 ):
     """A ticket configuration that could not be right is a configuration error
-    like any other: a sentence and exit 2, not a traceback. `report_ticket` is
+    like any other: a sentence and exit 2, not a traceback. Fetching is
     deliberately never fatal, so the source is built where the other config
-    errors are caught rather than inside it."""
+    errors are caught rather than inside the thing that fetches."""
     for name, value in env.items():
         monkeypatch.setenv(name, value)
 
@@ -773,10 +862,10 @@ async def test_an_expired_ticket_is_not_reported_as_held(monkeypatch, caplog):
     )
 
     with caplog.at_level("INFO"):
-        await proxy_module.report_ticket(source)
+        await _hold(source)
 
     logged = "\n".join(r.getMessage() for r in caplog.records)
-    assert "already expired" in logged
+    assert "already-expired" in logged
     assert "expires in" not in logged
     # A positive number of seconds. Rendered from `remaining()` unnegated, the
     # line reads "expired -3600s ago".
@@ -787,10 +876,11 @@ async def test_an_expired_ticket_is_not_reported_as_held(monkeypatch, caplog):
 async def test_startup_fetches_the_ticket_rather_than_only_building_the_source(
     config, upstream, monkeypatch, caplog
 ):
-    """`report_ticket` tested directly says nothing about whether `main` calls
-    it. Disconnected, every other test still passes and the feature is gone."""
+    """The holder tested directly says nothing about whether `main` starts it.
+    Disconnected, every other test still passes and the feature is gone."""
     import httpx
 
+    monkeypatch.setenv("RAIL_TICKET_MODE", "enforce")
     monkeypatch.setenv("RAIL_CENTER_URL", "https://rc.invalid")
     monkeypatch.setenv("RAIL_HOST_ID", "h")
     monkeypatch.setenv("RAIL_SANDBOX_NAME", "s")
@@ -823,10 +913,10 @@ async def test_startup_fetches_the_ticket_rather_than_only_building_the_source(
     logged = "\n".join(r.getMessage() for r in caplog.records)
     assert "fetching this proxy's ticket" in logged
     # The authoritative-empty answer, reported as itself. Folded into the
-    # generic failure handler it reads as "could not fetch a ticket", which is
-    # the opposite thing: an issuer that is down, rather than one saying this
-    # proxy has no identity.
-    assert "no ticket held" in logged
+    # generic failure handler it reads as "ticket refresh failed", which is the
+    # opposite thing: an issuer that is down, rather than one saying this proxy
+    # has no identity.
+    assert "Rail Center holds no ticket" in logged
     # The auth state, which is `describe()`'s and not the raw url's. It is the
     # only thing in this line telling an operator how the proxy authenticated.
     assert "(unauthenticated)" in logged
@@ -936,9 +1026,9 @@ def test_the_bearer_token_reaches_the_source_it_configures(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_a_failure_with_no_message_is_named_by_its_type(caplog):
-    """`asyncio.TimeoutError` renders as the empty string, and the startup fetch
-    is exactly where one arrives. Interpolated blindly, the single line this
-    fetch exists to produce reads `could not fetch a ticket ()`."""
+    """`asyncio.TimeoutError` renders as the empty string, and a fetch bounded
+    by a deadline is exactly where one arrives. Interpolated blindly, the line
+    reads `ticket refresh failed ()`."""
     import asyncio
 
     class _Source:
@@ -949,10 +1039,10 @@ async def test_a_failure_with_no_message_is_named_by_its_type(caplog):
             raise asyncio.TimeoutError
 
     with caplog.at_level("WARNING"):
-        await proxy_module.report_ticket(_Source())
+        await _hold(_Source())
 
     logged = "\n".join(r.getMessage() for r in caplog.records)
-    assert "could not fetch a ticket (TimeoutError)" in logged
+    assert "ticket refresh failed (TimeoutError)" in logged
 
 
 def test_redaction_stays_linear_on_text_it_will_never_match():
@@ -976,7 +1066,7 @@ def test_redaction_stays_linear_on_text_it_will_never_match():
         for _ in range(5):
             start = _time.perf_counter()
             for _ in range(10):
-                proxy_module._redact(payload)
+                proxy_module.redact_credentials(payload)
             best = min(best, _time.perf_counter() - start)
         return best
 
@@ -988,7 +1078,7 @@ def test_redaction_stays_linear_on_text_it_will_never_match():
 def test_every_credential_in_a_line_is_redacted_not_only_the_first():
     """One record can name two upstreams — the mount loop logs one line each,
     and a failure message can quote both ends of a hop."""
-    redacted = proxy_module._redact(
+    redacted = proxy_module.redact_credentials(
         "http://a:1@one.invalid/mcp -> http://b:2@two.invalid/mcp"
     )
 
@@ -1000,7 +1090,7 @@ def test_the_mount_is_announced_with_its_name_and_its_url(config, caplog):
     recover from the outside: the tools are namespaced, but nothing on the wire
     says which address a namespace resolved to."""
     with caplog.at_level("INFO"):
-        proxy_module.build_gateway()
+        proxy_module.build_gateway(None)
 
     logged = "\n".join(r.getMessage() for r in caplog.records)
     assert "mounted 'delivery' -> http://upstream.invalid/mcp" in logged
@@ -1019,15 +1109,28 @@ def test_a_log_line_carries_its_level_and_its_logger(monkeypatch, capsys):
     assert "[WARNING] fastmcp_proxy: a message" in err
 
 
-def test_no_control_plane_is_announced_rather_than_silent(caplog):
-    """`ticket_settings()` returning None is the supported open-source state.
-    Silence makes it indistinguishable from three mis-spelled variable names."""
-    import asyncio
+@pytest.mark.asyncio
+async def test_pass_through_is_announced_rather_than_silent(
+    config, upstream, monkeypatch, caplog
+):
+    """Attaching nothing is a supported state and a surprising one to meet in a
+    log. Silence makes it indistinguishable from a proxy that meant to attach
+    and lost its configuration."""
+    import uvicorn
+
+    class _Server:
+        def __init__(self, config):
+            pass
+
+        async def serve(self):
+            return None
+
+    monkeypatch.setattr(uvicorn, "Server", _Server)
 
     with caplog.at_level("INFO"):
-        asyncio.run(proxy_module.report_ticket(None))
+        assert await proxy_module.main() == 0
 
-    assert "no Rail Center configured" in caplog.text
+    assert "RAIL_TICKET_MODE=none" in caplog.text
 
 
 def test_redaction_reaches_a_logger_that_never_propagates_to_root():
@@ -1093,10 +1196,9 @@ def test_a_traceback_is_redacted_along_with_the_message_above_it():
 
 
 def test_a_long_credential_survives_neither_truncation_site(write_config, caplog):
-    """`_USERINFO` needs the closing `@` to match, so a cut that lands inside a
-    password hands the filter a stump it cannot recognise. Both sites redact
-    before they truncate; a JWT-as-url-password is comfortably long enough to
-    reach either."""
+    """Both sites redact before they truncate, for the reason
+    `TicketHolder.refresh_once` gives. A JWT-as-url-password is comfortably
+    long enough to reach either."""
     secret = "S3CR3T" * 60
 
     write_config(
@@ -1115,8 +1217,9 @@ def test_a_long_credential_survives_neither_truncation_site(write_config, caplog
 async def test_a_long_credential_in_a_fetch_failure_is_redacted_before_the_cut(
     caplog,
 ):
-    """The same cut, on the other site: `report_ticket` truncates the exception
-    at 300 characters, and an `HTTPStatusError` renders the whole url."""
+    """The same cut, on the other site: a refresh failure truncates the
+    exception at 300 characters, and an `HTTPStatusError` renders the whole
+    url."""
     secret = "S3CR3T" * 60
 
     class _Source:
@@ -1129,7 +1232,7 @@ async def test_a_long_credential_in_a_fetch_failure_is_redacted_before_the_cut(
             )
 
     with caplog.at_level("WARNING"):
-        await proxy_module.report_ticket(_Source())
+        await _hold(_Source())
 
     assert "S3CR3T" not in caplog.text
     assert "***@rc.invalid" in caplog.text
@@ -1144,7 +1247,7 @@ def test_the_filter_never_raises_into_the_call_that_logged(monkeypatch):
 
     monkeypatch.setattr(
         proxy_module,
-        "_redact",
+        "redact_credentials",
         lambda _text: (_ for _ in ()).throw(RuntimeError("redaction broke")),
     )
     emitted: list[str] = []
@@ -1345,7 +1448,7 @@ def test_a_withheld_record_keeps_no_traceback_either(monkeypatch):
 
     monkeypatch.setattr(
         proxy_module,
-        "_redact",
+        "redact_credentials",
         lambda _text: (_ for _ in ()).throw(RuntimeError("redaction broke")),
     )
     try:
@@ -1417,3 +1520,276 @@ def test_a_template_that_does_not_match_its_arguments_is_still_redacted():
     proxy_module.RedactingFilter().filter(record)
 
     assert record.args == ("https://***@rc.invalid/v1/tickets",)
+
+
+# ─────────────────────────────────────────────────────────────────────
+#  RAIL_TICKET_MODE
+# ─────────────────────────────────────────────────────────────────────
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        ("", "enforce"),
+        ("none", "none"),
+        ("observe", "observe"),
+        ("enforce", "enforce"),
+        ("  ENFORCE  ", "enforce"),
+    ],
+    ids=["unset", "none", "observe", "enforce", "padded"],
+)
+def test_the_ticket_mode_defaults_to_attaching(monkeypatch, value, expected):
+    """Absence is the safe state. Defaulted to `none`, a deployment that lost
+    its Rail Center variables would come up healthy and forward every call
+    unstamped — which is exactly the failure the mode exists to catch."""
+    monkeypatch.setenv("RAIL_TICKET_MODE", value)
+
+    assert proxy_module.ticket_mode() == expected
+
+
+@pytest.mark.parametrize("value", ["strict", "off", "true", "en force"], ids=str)
+def test_an_unknown_ticket_mode_exits_rather_than_falling_back(monkeypatch, value):
+    """A binary meeting a vocabulary it does not know fails loudly. Falling back
+    to the permissive value would let a platform add a mode and silently demote
+    every component that predates it; falling back to the strict one would take
+    a fleet down on a typo. Neither is this component's call."""
+    monkeypatch.setenv("RAIL_TICKET_MODE", value)
+
+    with pytest.raises(proxy_module.ConfigError, match="RAIL_TICKET_MODE"):
+        proxy_module.ticket_mode()
+
+
+@pytest.mark.parametrize("mode", ["observe", "enforce"], ids=str)
+def test_attaching_without_an_issuer_to_fetch_from_is_a_config_error(monkeypatch, mode):
+    """The half of the cross-check that matters most: a proxy that meant to
+    identify its agent and lost `RAIL_CENTER_URL` would otherwise come up
+    healthy, forward everything unstamped, and be discovered downstream."""
+    monkeypatch.setenv("RAIL_TICKET_MODE", mode)
+
+    with pytest.raises(proxy_module.ConfigError) as info:
+        proxy_module.build_ticket_source()
+
+    # Every one that is missing, by name. This is a container log, and an
+    # operator reading it cannot see which of three they got wrong.
+    assert "RAIL_CENTER_URL" in str(info.value)
+    assert "RAIL_HOST_ID" in str(info.value)
+    assert "RAIL_SANDBOX_NAME" in str(info.value)
+    assert "RAIL_TICKET_MODE=none" in str(info.value)
+
+
+@pytest.mark.parametrize(
+    ("present", "absent"),
+    [
+        ("RAIL_CENTER_URL", ("RAIL_HOST_ID", "RAIL_SANDBOX_NAME")),
+        ("RAIL_HOST_ID", ("RAIL_CENTER_URL", "RAIL_SANDBOX_NAME")),
+        ("RAIL_SANDBOX_NAME", ("RAIL_CENTER_URL", "RAIL_HOST_ID")),
+    ],
+    ids=lambda p: p if isinstance(p, str) else "",
+)
+def test_a_partly_configured_issuer_names_only_what_is_missing(
+    monkeypatch, present, absent
+):
+    """Naming all three when two are already set sends an operator to re-check
+    work they did correctly."""
+    monkeypatch.setenv("RAIL_TICKET_MODE", "enforce")
+    monkeypatch.setenv(present, "value")
+
+    with pytest.raises(proxy_module.ConfigError) as info:
+        proxy_module.build_ticket_source()
+
+    assert present not in str(info.value)
+    assert all(name in str(info.value) for name in absent)
+
+
+def test_pass_through_beside_a_stray_variable_reports_the_contradiction(monkeypatch):
+    """One naming variable left set beside `none` is contradictory intent, not
+    an unfinished configuration — telling that operator to set the other two
+    would be advising them to finish something they did not start."""
+    monkeypatch.setenv("RAIL_TICKET_MODE", "none")
+    monkeypatch.setenv("RAIL_HOST_ID", "h")
+
+    with pytest.raises(proxy_module.ConfigError) as info:
+        proxy_module.build_ticket_source()
+
+    assert "was not meant" in str(info.value)
+    assert "RAIL_HOST_ID" in str(info.value)
+    assert "also required" not in str(info.value)
+
+
+def test_a_configured_issuer_that_will_never_be_asked_is_a_config_error(monkeypatch):
+    """The other half. `none` beside a configured Rail Center is contradictory
+    intent, and guessing which of the two was meant is not this component's
+    call — silently honouring the mode would leave three variables set and
+    nothing reading them."""
+    monkeypatch.setenv("RAIL_TICKET_MODE", "none")
+    monkeypatch.setenv("RAIL_CENTER_URL", "https://rc.invalid")
+    monkeypatch.setenv("RAIL_HOST_ID", "h")
+    monkeypatch.setenv("RAIL_SANDBOX_NAME", "s")
+
+    with pytest.raises(proxy_module.ConfigError, match="was not meant"):
+        proxy_module.build_ticket_source()
+
+
+@pytest.mark.parametrize(
+    ("value", "expected", "warns"),
+    [
+        ("", 3600.0, False),
+        ("60", 60.0, False),
+        ("0", 3600.0, True),
+        ("x", 3600.0, True),
+    ],
+    ids=["unset", "seconds", "zero", "junk"],
+)
+def test_the_refresh_interval_falls_back_rather_than_disabling_itself(
+    monkeypatch, caplog, value, expected, warns
+):
+    """An upper bound, not the interval: a ticket's own expiry drives the real
+    cadence. Zero would be a poll loop against Rail Center."""
+    monkeypatch.setenv("RAIL_PROXY_REFRESH_SECONDS", value)
+
+    with caplog.at_level("WARNING"):
+        assert proxy_module.refresh_seconds() == expected
+    assert bool(caplog.records) is warns
+
+
+@pytest.mark.asyncio
+async def test_the_refresh_interval_reaches_the_holder(config, upstream, monkeypatch):
+    """Parsed correctly and never passed on is the same as not having it."""
+    import httpx
+
+    monkeypatch.setenv("RAIL_TICKET_MODE", "enforce")
+    monkeypatch.setenv("RAIL_CENTER_URL", "https://rc.invalid")
+    monkeypatch.setenv("RAIL_HOST_ID", "h")
+    monkeypatch.setenv("RAIL_SANDBOX_NAME", "s")
+    monkeypatch.setenv("RAIL_PROXY_REFRESH_SECONDS", "42")
+
+    real = proxy_module.TicketSource
+    monkeypatch.setattr(
+        proxy_module,
+        "TicketSource",
+        lambda *a, **k: real(
+            *a,
+            **{**k, "transport": httpx.MockTransport(lambda _r: httpx.Response(500))},
+        ),
+    )
+    held: list = []
+
+    class _Server:
+        def __init__(self, config):
+            pass
+
+        async def serve(self):
+            return None
+
+    monkeypatch.setattr("uvicorn.Server", _Server)
+    real_holder = proxy_module.TicketHolder
+
+    def capture(*a, **k):
+        holder = real_holder(*a, **k)
+        held.append(holder)
+        return holder
+
+    monkeypatch.setattr(proxy_module, "TicketHolder", capture)
+
+    assert await proxy_module.main() == 0
+    assert held and held[0].refresh_seconds == 42.0
+
+
+@pytest.mark.asyncio
+async def test_the_refresh_loop_does_not_outlive_the_server(
+    config, upstream, monkeypatch
+):
+    """`asyncio.run` cancels a surviving task during interpreter shutdown, and
+    that surfaces as a traceback on an otherwise clean SIGTERM."""
+    import httpx
+
+    monkeypatch.setenv("RAIL_TICKET_MODE", "enforce")
+    monkeypatch.setenv("RAIL_CENTER_URL", "https://rc.invalid")
+    monkeypatch.setenv("RAIL_HOST_ID", "h")
+    monkeypatch.setenv("RAIL_SANDBOX_NAME", "s")
+
+    real = proxy_module.TicketSource
+    monkeypatch.setattr(
+        proxy_module,
+        "TicketSource",
+        lambda *a, **k: real(
+            *a,
+            **{**k, "transport": httpx.MockTransport(lambda _r: httpx.Response(500))},
+        ),
+    )
+    held: list = []
+    real_holder = proxy_module.TicketHolder
+    monkeypatch.setattr(
+        proxy_module,
+        "TicketHolder",
+        lambda *a, **k: held.append(real_holder(*a, **k)) or held[-1],
+    )
+
+    class _Server:
+        def __init__(self, config):
+            pass
+
+        async def serve(self):
+            return None
+
+    monkeypatch.setattr("uvicorn.Server", _Server)
+
+    # Bounded: `main` closes the holder in a `finally`, and a close that does
+    # not cancel waits on a loop that never ends. Unbounded, a regression here
+    # hangs the CI job instead of failing it.
+    import asyncio
+
+    assert await asyncio.wait_for(proxy_module.main(), 10) == 0
+    assert held[0]._task is None, "the refresh loop was left running"
+
+
+def test_a_credential_in_a_mapping_argument_is_redacted_too():
+    """`log.info("%(url)s", {"url": ...})` is a shape the standard library
+    supports and libraries use. The filter's rule is that it applies to every
+    record, whoever emitted it — a branch that rebuilds the mapping without
+    redacting it keeps the object identity a formatter needs and drops the one
+    thing the filter is for."""
+    import logging
+
+    record = logging.LogRecord(
+        "somelib",
+        logging.INFO,
+        __file__,
+        1,
+        "connecting to %(url)s",
+        # A one-tuple, which is how `logging` is handed a mapping: LogRecord
+        # unwraps it and stores the dict as `args`.
+        ({"url": "https://svc:hunter2@rc.invalid/v1/tickets"},),
+        None,
+    )
+    proxy_module.RedactingFilter().filter(record)
+
+    assert "hunter2" not in record.getMessage()
+    assert "***@rc.invalid" in record.getMessage()
+
+
+def test_an_unread_upstream_key_is_announced_rather_than_refused(
+    write_config, caplog, monkeypatch
+):
+    """`transport: streamable_http` names the only transport this proxy speaks,
+    so refusing to start over it is a worse outcome than the silence the
+    warning replaces — but `headers:` is the same shape and does lose a
+    credential, so it is said out loud."""
+    monkeypatch.setenv("RAIL_TICKET_MODE", "none")
+    write_config(
+        "mcp:\n  servers:\n"
+        "    - name: delivery\n      url: http://gateway.invalid:8080/mcp\n"
+        "      transport: streamable_http\n"
+        "      headers:\n        Authorization: Bearer upstream-key\n"
+    )
+
+    with caplog.at_level("WARNING"):
+        servers = proxy_module.load_servers()
+
+    assert [s["name"] for s in servers] == ["delivery"]
+    warned = [
+        r.getMessage() for r in caplog.records if "does not read" in r.getMessage()
+    ]
+    assert len(warned) == 1
+    assert "`headers`" in warned[0]
+    assert "`transport`" in warned[0]

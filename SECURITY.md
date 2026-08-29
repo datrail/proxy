@@ -4,8 +4,7 @@ The DatRail proxy sits in front of an agent's MCP traffic. It is the boundary
 that keeps the **`x-rail` ticket** everything downstream trusts out of the
 sandbox: it forwards calls to the upstreams its config names, forwards none of
 the agent's own headers, and — where a Rail Center is configured — fetches its
-own ticket at startup. Attaching a ticket to an outbound request is not part of
-this repository.
+own ticket, holds it, and attaches it to everything it forwards.
 
 Two things are worth attacking here. A call can end up attributed to an agent it
 did not come from, so the gateway enforces the wrong policy on it and the audit
@@ -41,8 +40,16 @@ quiet.
   and would show up nowhere in the logs as an error. This is the most valuable
   thing to attack and the most valuable thing to report.
 - **Ticket handling.** A ticket is a bearer credential for its lifetime. It must
-  not reach a log, an error message, a crash dump, or an upstream that did not
-  need it. The startup fetch logs a digest prefix and never the value.
+  not reach a log, an error message, a crash dump, or any host other than the
+  upstream it was attached for. It is logged as a digest prefix and never as a
+  value, a ticket that could not be a header value is refused rather than
+  stored, and redirects are not followed — an upstream answering `307` cannot
+  name a host to deliver it to.
+- **The upstream leg.** The ticket goes out on every forwarded call. Redirects
+  are not followed and no ambient proxy setting is read, so nothing but the
+  configured address receives it; a plaintext upstream is warned about rather
+  than refused, because an http upstream on a private network is an ordinary
+  deployment. A ticket reaching a host the config did not name is a report.
 - **The control-plane fetch.** It carries a credential out and a ticket back,
   so it refuses to send one over plaintext to anything but loopback, reads no
   ambient proxy setting, caps and refuses to decompress what comes back, and
