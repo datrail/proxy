@@ -69,6 +69,17 @@ docker run -p 8091:8091 \
   ghcr.io/datrail/proxy:latest
 ```
 
+`e2e/` runs the whole thing in containers — this proxy, a stubbed Rail Center
+and a stubbed upstream — and asserts what reached the wire. It needs nothing
+you do not already have:
+
+```
+docker compose -f e2e/compose.yml up --build --abort-on-container-exit --exit-code-from driver
+```
+
+See [e2e/README.md](e2e/README.md) for what it proves and what it deliberately
+leaves to the unit suite.
+
 Apache-2.0 — see [LICENSE](LICENSE) and [NOTICE](NOTICE). Sending a change:
 [CONTRIBUTING.md](CONTRIBUTING.md). Taking part:
 [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md). Security reports go to

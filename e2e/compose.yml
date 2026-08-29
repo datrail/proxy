@@ -1,0 +1,94 @@
+# The proxy, a control plane and an upstream, in containers, asserting what
+# actually crossed the wire. `docker compose up` is both the test and the
+# quickstart: it is the only path where someone with neither a Rail Center nor
+# a gateway sees a ticket fetched and a header injected.
+#
+#   docker compose -f e2e/compose.yml up --build --abort-on-container-exit --exit-code-from driver
+#
+# The exit code is the result.
+
+name: datrail-proxy-e2e
+
+x-proxy: &proxy
+  build:
+    context: ..
+    dockerfile: Dockerfile
+  volumes:
+    - ./bridge.yaml:/app/fastmcp_proxy/bridge.yaml:ro
+  healthcheck:
+    # /health answers 200 whether or not a ticket is held — failing closed is a
+    # designed state — so this is liveness for all three variants alike.
+    test: ["CMD", "python", "-c", "import urllib.request;urllib.request.urlopen('http://localhost:8091/health').read()"]
+    interval: 2s
+    timeout: 3s
+    retries: 15
+
+x-wiremock: &wiremock
+  image: wiremock/wiremock:3.9.1
+  # Response templating keeps expires_at ahead of now, so the fixture does not
+  # rot the way a hardcoded stamp would.
+  command: ["--global-response-templating"]
+  healthcheck:
+    test: ["CMD", "curl", "-sf", "http://localhost:8080/__admin/health"]
+    interval: 2s
+    timeout: 3s
+    retries: 15
+
+services:
+  # Stands in for Rail Center. Query-parameter matching gives both ticket cases
+  # with no code: e2e-sandbox gets a ticket, anything else gets an empty list —
+  # which is authoritative, not an error.
+  rail-center:
+    <<: *wiremock
+    volumes:
+      - ./rc-mappings:/home/wiremock/mappings:ro
+
+  # Stands in for an MCP server, and records every request so the driver can
+  # assert on headers rather than on log output.
+  upstream:
+    <<: *wiremock
+    volumes:
+      - ./mcp-mappings:/home/wiremock/mappings:ro
+
+  # Registered: holds a ticket and attaches it.
+  proxy:
+    <<: *proxy
+    environment:
+      RAIL_CENTER_URL: http://rail-center:8080
+      RAIL_HOST_ID: host-e2e
+      RAIL_SANDBOX_NAME: e2e-sandbox
+    depends_on:
+      rail-center: {condition: service_healthy}
+      upstream: {condition: service_healthy}
+
+  # Unregistered: Rail Center answers, and answers that it has no ticket. The
+  # call still goes out, saying why it carries no identity.
+  proxy-unregistered:
+    <<: *proxy
+    environment:
+      RAIL_CENTER_URL: http://rail-center:8080
+      RAIL_HOST_ID: host-e2e
+      RAIL_SANDBOX_NAME: not-a-registered-sandbox
+      RAIL_PROXY_REFRESH_SECONDS: "3600"
+    depends_on:
+      rail-center: {condition: service_healthy}
+      upstream: {condition: service_healthy}
+
+  # No control plane at all. Neither header is attached — which is not the
+  # fail-closed path, and the difference is the point of running all three.
+  proxy-passthrough:
+    <<: *proxy
+    environment:
+      RAIL_TICKET_MODE: none
+    depends_on:
+      upstream: {condition: service_healthy}
+
+  driver:
+    image: curlimages/curl:8.11.1
+    volumes:
+      - ./driver.sh:/driver.sh:ro
+    entrypoint: ["sh", "/driver.sh"]
+    depends_on:
+      proxy: {condition: service_healthy}
+      proxy-unregistered: {condition: service_healthy}
+      proxy-passthrough: {condition: service_healthy}
