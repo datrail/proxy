@@ -1,0 +1,190 @@
+# Build and publish a versioned container image to GitHub Packages (ghcr.io).
+#
+# Each component repository carries its own copy at this path; there is no
+# shared workflow repo, so a fix here has to be carried to the others by hand.
+# Publishing is driven by tags: `git tag v0.1.0 && git push --tags` produces
+# ghcr.io/<owner>/<repo>:0.1.0, :0.1, and :latest, multi-arch, with an SBOM and
+# a signed build-provenance attestation.
+#
+# Requires a Dockerfile at the repository root; a component that keeps one
+# elsewhere has to edit the build step.
+name: Release Container Images
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Version to publish, e.g. v0.1.0"
+        required: true
+
+permissions:
+  contents: read
+  packages: write
+  id-token: write
+  attestations: write
+
+# Keyed on the repository, not the ref. Every tag is a distinct ref, so a
+# ref-keyed group lets `v0.1.0` and `v0.1.1` publish concurrently — and both
+# write the same mutable `:0.1` and `:latest` tags, which is a last-write-wins
+# race on exactly the pointers people pull by.
+concurrency:
+  group: container-release-${{ github.repository }}
+  cancel-in-progress: false
+
+jobs:
+  # Resolved in its own job so the release can be gated on the suite: a
+  # job-level `uses:` reads another job's outputs, and cannot read a step's.
+  version:
+    runs-on: ubuntu-latest
+    # Nothing here touches the repository or the registry; the workflow-level
+    # grants exist for `publish`.
+    permissions: {}
+    outputs:
+      tag: ${{ steps.resolve.outputs.tag }}
+      latest: ${{ steps.resolve.outputs.latest }}
+    steps:
+      # Resolve the version before anything is checked out or built, and refuse
+      # anything that is not a release tag.
+      #
+      # This is load-bearing for workflow_dispatch. metadata-action derives its
+      # tags from the *event's* ref, not from what we checked out, so a manual
+      # run would tag whatever the "use workflow from" branch is — `type=semver`
+      # would match nothing and emit no version, while `latest` (a branch name
+      # has no hyphen) would fire anyway. Republishing v0.1.0 by hand would
+      # quietly push the branch head as `:latest` and nothing else.
+      #
+      # The same guard covers the tag trigger: the `v*` glob also matches `v1`
+      # and `vfoo`, which produce no semver tag but would still have moved
+      # `latest`.
+      - id: resolve
+        env:
+          RAW_REF: ${{ github.event.inputs.tag || github.ref_name }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$RAW_REF" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::'$RAW_REF' is not a vMAJOR.MINOR.PATCH release tag; refusing to publish."
+            exit 1
+          fi
+          echo "tag=$RAW_REF" >> "$GITHUB_OUTPUT"
+          # A prerelease must not move `latest` — someone pulling the
+          # unqualified name is asking for the newest stable build.
+          if [[ "$RAW_REF" == *-* ]]; then
+            echo "latest=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "latest=true" >> "$GITHUB_OUTPUT"
+          fi
+
+  # Publishing a version whose tests were never run is what this closes. The
+  # tag is checked out by name, so the suite runs against exactly what is
+  # about to be built rather than against whatever the run was launched from.
+  ci:
+    needs: version
+    uses: ./.github/workflows/ci.yml
+    with:
+      ref: ${{ needs.version.outputs.tag }}
+
+  publish:
+    needs: [version, ci]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.version.outputs.tag }}
+
+      # The commit the tag actually points at. `github.sha` is the ref the run
+      # was launched from, which on a workflow_dispatch is the branch in the
+      # "use workflow from" box, not the tag being republished — so labelling
+      # with it would stamp the image with a commit it was not built from.
+      - id: commit
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository }}
+          # `value=` pins every tag to the version resolved above, so a manual
+          # dispatch tags what it built rather than what it was launched from.
+          tags: |
+            type=semver,pattern={{version}},value=${{ needs.version.outputs.tag }}
+            type=semver,pattern={{major}}.{{minor}},value=${{ needs.version.outputs.tag }}
+            type=raw,value=latest,enable=${{ needs.version.outputs.latest == 'true' }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.revision=${{ steps.commit.outputs.sha }}
+
+      - id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          sbom: true
+          # buildx would attach its own *unsigned* provenance, which the signed
+          # attestation below makes redundant. Off, so the image carries one
+          # provenance record rather than two with different trust in them.
+          provenance: false
+          # Scope the cache so a second build job added to this repo later does
+          # not silently share one `buildkit` scope with this one. A literal
+          # rather than ${{ github.workflow }}: that resolves to the display
+          # name, which is prose — rewording it would silently cold-start this
+          # cache, and it currently contains spaces.
+          cache-from: type=gha,scope=container-release
+          cache-to: type=gha,mode=max,scope=container-release
+
+      # Signed, verifiable statement that this digest came from this workflow:
+      # `gh attestation verify oci://ghcr.io/<owner>/<repo>:<tag> --owner <org>`.
+      #
+      # Attestations cover private repositories only on GitHub Enterprise
+      # Cloud; on Free, Pro and Team they are a public-repository feature. A
+      # private repository on a free org therefore cannot produce one, and no
+      # paid plan short of Enterprise Cloud changes that.
+      #
+      # The image is already pushed by the time this runs, so a hard failure
+      # would mark a successful publish as failed; it warns instead. This
+      # swallows every failure of the step, not only the plan one — the warning
+      # is the only signal either way.
+      #
+      # The provenance this generates records the workflow run's own ref, so a
+      # workflow_dispatch republish attests the dispatch context rather than the
+      # tag. The action offers no way to override that; the image labels carry
+      # the built commit instead.
+      - id: attest
+        continue-on-error: true
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-name: ghcr.io/${{ github.repository }}
+          subject-digest: ${{ steps.build.outputs.digest }}
+          push-to-registry: true
+
+      - if: steps.attest.outcome == 'failure'
+        run: echo "::warning::Image published without a provenance attestation — attestations need a public repository, or GitHub Enterprise Cloud."
+
+      # Values reach the shell through env, never through `${{ }}` inside run:,
+      # which is substituted as raw text before bash sees it.
+      - name: Summary
+        env:
+          TAGS: ${{ steps.meta.outputs.tags }}
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          {
+            echo "### Published"
+            echo
+            echo '```'
+            echo "$TAGS"
+            echo '```'
+            echo
+            echo "digest: \`$DIGEST\`"
+          } >> "$GITHUB_STEP_SUMMARY"

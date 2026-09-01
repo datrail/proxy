@@ -1,0 +1,22 @@
+# The test suite. Installed alongside requirements.txt in CI and never in the
+# image — the same rule requirements-dev.txt states for the linter.
+#
+pytest==9.1.1
+pytest-asyncio==1.4.0
+
+# The suite builds a one-root CA bundle from it, to tell a TLS context that read
+# the environment from one that did not. It arrives transitively through httpx,
+# but a module that imports a package names it — the same rule requirements.txt
+# states for starlette and httpx.
+certifi==2026.6.17
+
+# Validates tests/fixtures/tickets.json against spec/ticket-fetch.schema.json.
+# The schema is the contract this proxy parses, so the fixture the suite is
+# built around is checked against it rather than trusted to stay in step.
+#
+# The `format` extra is what makes `date-time` an assertion rather than an
+# annotation, and it is where the check on `expires_at` — the field the whole
+# fail-closed path turns on — comes from. Named here rather than left to a
+# transitive install, so the case asserting a malformed stamp is refused fails
+# loudly rather than quietly checking nothing.
+jsonschema[format]==4.26.0

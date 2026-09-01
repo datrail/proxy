@@ -1,0 +1,13 @@
+{
+  "host_id": "e2e-host",
+  "tickets": [
+    {
+      "agent_id": "9f8c1e2a-4b7d-4c3e-9a1f-2d5e8b0c7a41",
+      "sandbox_name": "e2e-sandbox",
+      "token": "e2e-opaque-ticket-value",
+      "expires_at": "2026-07-28T10:15:00Z",
+      "posture_score": 82.0,
+      "tier": "trusted"
+    }
+  ]
+}

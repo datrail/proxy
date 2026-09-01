@@ -1,0 +1,12 @@
+{
+  "priority": 1,
+  "request": {
+    "method": "POST", "urlPath": "/mcp",
+    "bodyPatterns": [{"matchesJsonPath": "$[?(@.method == 'tools/call')]"}]
+  },
+  "response": {
+    "status": 200,
+    "headers": {"Content-Type": "application/json", "Mcp-Session-Id": "e2e-upstream-session"},
+    "body": "{\"jsonrpc\":\"2.0\",\"id\":{{jsonPath request.body '$.id'}},\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"delivered\"}],\"isError\":false}}"
+  }
+}

@@ -1,0 +1,39 @@
+# Python virtual envs
+.venv/
+venv/
+**/.venv/
+**/__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Logs and runtime state
+/logs/
+*.log
+*.pid
+
+# Local config with secrets
+.env
+.env.local
+
+# Runtime config — copied from bridge.yaml.example and edited per deployment
+fastmcp_proxy/bridge.yaml
+
+# Tool caches
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# macOS
+.DS_Store
+
+# Backup files (created during dev)
+**/*.bak
+**/*.bak.*
