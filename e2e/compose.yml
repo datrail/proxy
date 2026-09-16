@@ -64,6 +64,7 @@ services:
   proxy:
     <<: *proxy
     environment:
+      RAIL_PLUGIN_ENABLED: "true"
       RAIL_CENTER_URL: http://rail-center:8080
       RAIL_HOST_ID: host-e2e
       RAIL_SANDBOX_NAME: e2e-sandbox
@@ -76,6 +77,7 @@ services:
   proxy-unregistered:
     <<: *proxy
     environment:
+      RAIL_PLUGIN_ENABLED: "true"
       RAIL_CENTER_URL: http://rail-center:8080
       RAIL_HOST_ID: host-e2e
       RAIL_SANDBOX_NAME: not-a-registered-sandbox
@@ -85,10 +87,11 @@ services:
 
   # No control plane at all. Neither header is attached — which is not the
   # fail-closed path, and the difference is the point of running all three.
+  #
+  # It sets nothing: RAIL_PLUGIN_ENABLED is off by default, so a plain proxy is
+  # what an empty environment gets. The other two have to say `true`.
   proxy-passthrough:
     <<: *proxy
-    environment:
-      RAIL_TICKET_MODE: none
     depends_on:
       upstream: {condition: service_healthy}
 

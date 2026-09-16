@@ -164,6 +164,9 @@ _RAIL_ENVIRONMENT = (
     "RAIL_SANDBOX_NAME",
     "RAIL_AUTH_MODE",
     "RAIL_AUTH_TOKEN",
+    "RAIL_PLUGIN_ENABLED",
+    # Retired, and cleared for exactly that reason: the proxy refuses to start
+    # on a leftover one, so a value in the shell would exit 2 across the suite.
     "RAIL_TICKET_MODE",
     "RAIL_PROXY_REFRESH_SECONDS",
     "RAIL_PROXY_TICKET_TIMEOUT_SECONDS",
@@ -191,20 +194,20 @@ def no_rail_center(monkeypatch):
 
 
 ONE_UPSTREAM = (
+    'schema_version: "1.0"\n'
     "mcp:\n  servers:\n    - name: delivery\n      url: http://upstream.invalid/mcp\n"
 )
 
 
 @pytest.fixture
-def config(write_config, monkeypatch):
+def config(write_config):
     """One upstream, named `delivery`, and a proxy that attaches nothing.
 
-    `RAIL_TICKET_MODE=none` because the default is `enforce`, which requires a
-    Rail Center: a proxy configured only far enough to forward has to say that
-    forwarding unstamped is what it meant. Tests about the ticket set the mode
-    themselves.
+    Nothing is set: `RAIL_PLUGIN_ENABLED` is off by default and `no_rail_center`
+    has cleared the three that would contradict it, so a proxy configured only
+    far enough to forward is what an empty environment gets. Tests about the
+    ticket turn the plugin on themselves.
     """
-    monkeypatch.setenv("RAIL_TICKET_MODE", "none")
     return write_config(ONE_UPSTREAM)
 
 

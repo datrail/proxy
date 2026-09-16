@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+import os
 import pathlib
 
 import httpx
@@ -244,8 +245,8 @@ async def test_the_rewrite_does_not_reach_past_the_mcp_endpoint(config, upstream
 @pytest.mark.asyncio
 async def test_health_answers_without_an_upstream_being_reachable(config, upstream):
     """It reports that the process is up and its config parsed, and asks the
-    upstream nothing. Under `RAIL_TICKET_MODE=none` there is no ticket to
-    report, and `null` says that rather than omitting the key."""
+    upstream nothing. With the plugin off there is no ticket to report, and
+    `null` says that rather than omitting the key."""
     async with (
         running_proxy() as app,
         httpx.AsyncClient(
@@ -257,7 +258,7 @@ async def test_health_answers_without_an_upstream_being_reachable(config, upstre
     assert response.status_code == 200
     assert response.json() == {
         "status": "ok",
-        "ticket_mode": "none",
+        "plugin_enabled": False,
         "ticket": None,
     }
     assert upstream == []
@@ -473,7 +474,7 @@ async def test_no_valid_ticket_fails_closed_with_the_reason(config, upstream, re
 
 @pytest.mark.asyncio
 async def test_pass_through_attaches_neither_header(config, upstream):
-    """`RAIL_TICKET_MODE=none`. Not the fail-closed path — no status header
+    """The plugin off. Not the fail-closed path — no status header
     either, because nothing was attempted."""
     await _forward_one_call(None)
 
@@ -513,14 +514,15 @@ async def test_a_rotation_is_picked_up_without_a_restart(config, upstream):
 
 
 @pytest.mark.asyncio
-async def test_the_mode_health_reports_is_the_one_it_was_built_with(
+async def test_the_flag_health_reports_is_the_one_it_was_built_with(
     config, upstream, monkeypatch
 ):
-    """`ticket_mode()` is resolved once, at build time. Moved into the handler
-    it would be an environment lookup on the hot path and — since it raises on
-    a value it does not know — a route that turns a 200 into a 500 long after
-    startup, on the endpoint an operator reaches when calls are being denied."""
-    monkeypatch.setenv("RAIL_TICKET_MODE", "observe")
+    """`plugin_enabled()` is resolved once, at build time. Moved into the
+    handler it would be an environment lookup on the hot path and — since it
+    raises on a value it does not know — a route that turns a 200 into a 500
+    long after startup, on the endpoint an operator reaches when calls are being
+    denied."""
+    monkeypatch.setenv("RAIL_PLUGIN_ENABLED", "true")
     holder = wound_holder(ticket="rc_ticket_opaque")
 
     async with (
@@ -529,11 +531,11 @@ async def test_the_mode_health_reports_is_the_one_it_was_built_with(
             transport=httpx.ASGITransport(app=app), base_url="http://proxy.test"
         ) as raw,
     ):
-        monkeypatch.setenv("RAIL_TICKET_MODE", "not-a-mode")
+        monkeypatch.setenv("RAIL_PLUGIN_ENABLED", "not-a-bool")
         response = await raw.get("/health")
 
     assert response.status_code == 200
-    assert response.json()["ticket_mode"] == "observe"
+    assert response.json()["plugin_enabled"] is True
 
 
 @pytest.mark.asyncio
@@ -544,7 +546,7 @@ async def test_health_reports_what_is_held_without_reporting_the_ticket(
     an endpoint the sandbox can reach must not hand out."""
     from fastmcp_proxy.xrail_auth import token_fingerprint
 
-    monkeypatch.setenv("RAIL_TICKET_MODE", "observe")
+    monkeypatch.setenv("RAIL_PLUGIN_ENABLED", "true")
     holder = wound_holder(ticket="rc_ticket_opaque")
 
     async with (
@@ -557,7 +559,7 @@ async def test_health_reports_what_is_held_without_reporting_the_ticket(
 
     body = response.json()
     assert response.status_code == 200
-    assert body["ticket_mode"] == "observe"
+    assert body["plugin_enabled"] is True
     assert body["ticket"]["ticket_held"] is True
     assert body["ticket"]["ticket_valid"] is True
     assert body["ticket"]["unavailable_reason"] is None
@@ -617,7 +619,7 @@ async def test_the_upstream_client_is_the_one_the_proxy_builds():
 @pytest.mark.asyncio
 async def test_health_stays_200_while_failing_closed(config, upstream, monkeypatch):
     """200, and the state in the body. The route says why it is not 503."""
-    monkeypatch.setenv("RAIL_TICKET_MODE", "enforce")
+    monkeypatch.setenv("RAIL_PLUGIN_ENABLED", "true")
     holder = wound_holder(reason="issuer-unreachable")
 
     async with (
@@ -638,7 +640,7 @@ async def test_a_plaintext_upstream_is_reported_when_a_ticket_is_attached(
     write_config, monkeypatch, caplog
 ):
     """One warning, for the one upstream it applies to."""
-    monkeypatch.setenv("RAIL_TICKET_MODE", "enforce")
+    monkeypatch.setenv("RAIL_PLUGIN_ENABLED", "true")
     write_config(
         "mcp:\n  servers:\n"
         "    - name: plain\n      url: http://gateway.invalid:8080/mcp\n"
@@ -662,7 +664,7 @@ async def test_pass_through_does_not_warn_about_a_plaintext_upstream(
 ):
     """With nothing to attach there is nothing on the wire to read, and a
     warning naming a risk that does not apply teaches an operator to skip it."""
-    monkeypatch.setenv("RAIL_TICKET_MODE", "none")
+    monkeypatch.setenv("RAIL_PLUGIN_ENABLED", "false")
 
     with caplog.at_level("WARNING"):
         proxy_module.build_gateway(None)
@@ -717,7 +719,14 @@ def test_a_credential_on_an_upstream_url_is_refused_while_a_ticket_is_attached(
 ):
     """Refused rather than dropped — `build_gateway` says why it cannot be
     sent."""
-    monkeypatch.setenv("RAIL_TICKET_MODE", "enforce")
+    monkeypatch.setenv("RAIL_PLUGIN_ENABLED", "true")
+    # The ordinary enrolled shape, and the one an injector needs: a Rail Center
+    # addressed, and a bearer credential to fetch the ticket with.
+    monkeypatch.setenv("RAIL_CENTER_URL", "https://rc.invalid")
+    monkeypatch.setenv("RAIL_HOST_ID", "h")
+    monkeypatch.setenv("RAIL_SANDBOX_NAME", "s")
+    monkeypatch.setenv("RAIL_AUTH_MODE", "bearer")
+    monkeypatch.setenv("RAIL_AUTH_TOKEN", "rc_service_token_abc123")
     write_config(
         "mcp:\n  servers:\n"
         "    - name: paid\n      url: https://svc:s3cret@gateway.invalid/mcp\n"
@@ -728,13 +737,28 @@ def test_a_credential_on_an_upstream_url_is_refused_while_a_ticket_is_attached(
 
     assert "s3cret" not in str(info.value)
     assert "paid" in str(info.value)
+    # The advice, not only the diagnosis. An injector exists only where the flag
+    # is on *and* a Rail Center is configured, so advice naming the flag alone
+    # sends an operator into `build_ticket_source`'s contradictory-intent
+    # refusal — and the names come from `_naming_a_rail_center()`, the
+    # expression that cross-check evaluates.
+    assert "unset RAIL_PLUGIN_ENABLED" in str(info.value)
+    assert all(name in str(info.value) for name in proxy_module._naming_a_rail_center())
+    assert "forward without a ticket" in str(info.value)
+    # Which is what "cannot drift" has to mean: unset exactly what the message
+    # names and the cross-check has nothing left to stop on. A message naming a
+    # subset leaves the rest set, and the operator reads a second refusal.
+    for name in [n for n in os.environ if n.startswith("RAIL_")]:
+        if name in str(info.value):
+            monkeypatch.delenv(name)
+    assert proxy_module.build_ticket_source() is None
 
 
 def test_a_username_only_upstream_url_is_a_credential_too(write_config, monkeypatch):
     """httpx derives Basic auth from `username or password`, so
     `https://token@host/` is as much a credential as `https://u:p@host/`.
     Reading only the password lets the one-part form past."""
-    monkeypatch.setenv("RAIL_TICKET_MODE", "enforce")
+    monkeypatch.setenv("RAIL_PLUGIN_ENABLED", "true")
     write_config(
         "mcp:\n  servers:\n"
         "    - name: paid\n      url: https://s3cret-as-a-username@gateway.invalid/mcp\n"
@@ -749,7 +773,7 @@ def test_a_credential_on_an_upstream_url_is_fine_with_nothing_to_attach(
 ):
     """With no injector httpx derives Basic auth from the userinfo, which is
     what the config asked for."""
-    monkeypatch.setenv("RAIL_TICKET_MODE", "none")
+    monkeypatch.setenv("RAIL_PLUGIN_ENABLED", "false")
     write_config(
         "mcp:\n  servers:\n"
         "    - name: paid\n      url: https://svc:s3cret@gateway.invalid/mcp\n"

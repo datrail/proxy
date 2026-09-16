@@ -63,9 +63,68 @@ def config_file() -> Path:
     return Path(raw) if raw else DEFAULT_CONFIG_FILE
 
 
-#: What an upstream entry may set. Anything else is refused rather than
-#: ignored — see the rejection in the loop below.
+#: What an upstream entry reads. Anything else is warned about rather than
+#: dropped in silence, and the entry is still served — see the warning in the
+#: loop below, which says why a refusal would be the worse outcome.
 _SERVER_KEYS = {"name", "url"}
+
+
+#: The config file's own format version, and it is not the policy bundle's.
+#: Rail Center writes the bundle's; a release of this component writes what this
+#: file may say. They share the word so an operator learns the concept once, and
+#: they will not move together.
+#:
+#: Compared on the major alone: a minor bump is a compatible addition, so an
+#: older proxy reads the file and serves it, ignoring whatever that minor added.
+#: It says so only where the addition lands inside an upstream entry, which is
+#: the one place an unknown key is warned about; a new top-level section or a
+#: new key under `mcp` arrives unremarked. A major it does not know is a file
+#: written for a different reader, and it refuses to start rather than serving
+#: the parts it recognises.
+_CONFIG_SCHEMA_MAJOR = 1
+
+
+def _check_schema_version(path: Path, raw: Any) -> None:
+    """Refuse a config file this proxy cannot read whole.
+
+    Absent is read as `1.0` and warned about, because every file written before
+    the field existed omits it and stopping those is a cost with nothing bought:
+    a file with no version is a file with no field this proxy is missing. The
+    warning is what gets the line added before the format does move.
+    """
+    if raw is None:
+        log.warning(
+            "%s has no schema_version; reading it as %d.0 — add "
+            '`schema_version: "%d.0"`',
+            path,
+            _CONFIG_SCHEMA_MAJOR,
+            _CONFIG_SCHEMA_MAJOR,
+        )
+        return
+    # Quoted in the example, so `1.0` unquoted arrives as a float and `1` as an
+    # int. Both are what an operator meant; neither is refused over its type.
+    text = str(raw).strip()
+    parts = text.split(".")
+    # Every part, not only the major: `1.x` has a major this proxy reads and is
+    # still not a version, and letting it through would mean honouring a file
+    # whose version nobody can compare to the next one. A third part is not
+    # refused — `1.0.0` is major 1 by any reading of it, and the major is the
+    # whole of the comparison.
+    #
+    # ASCII digits, not `isdigit()`: that is true of superscripts, which `int`
+    # then rejects with a ValueError nobody catches, and of the other scripts'
+    # decimal digits, which `int` accepts — so `١.0` would be served as major 1.
+    # A version in this file is written in the digits the rest of it is.
+    if not all(part.isascii() and part.isdigit() for part in parts):
+        raise ConfigError(
+            f"{path}: schema_version {text!r} is not a version; this proxy "
+            f"reads {_CONFIG_SCHEMA_MAJOR}.x"
+        )
+    if int(parts[0]) != _CONFIG_SCHEMA_MAJOR:
+        raise ConfigError(
+            f"{path}: schema_version {text!r} is a format this proxy does not "
+            f"read; it reads {_CONFIG_SCHEMA_MAJOR}.x"
+        )
 
 
 def load_servers() -> list[dict[str, Any]]:
@@ -95,6 +154,10 @@ def load_servers() -> list[dict[str, Any]]:
     # where a sentence would do.
     if not isinstance(data, dict):
         raise ConfigError(f"{path} must hold a mapping, not {type(data).__name__}")
+    # Before anything under `mcp` is read: the version describes the shape this
+    # loader is about to assume, so a reader must settle it first or it is
+    # parsing on a guess.
+    _check_schema_version(path, data.get("schema_version"))
     mcp = data.get("mcp") or {}
     if not isinstance(mcp, dict):
         raise ConfigError(f"{path}: `mcp` must be a mapping, not {type(mcp).__name__}")
@@ -245,6 +308,38 @@ def auth_token() -> str | None:
     return token
 
 
+def _naming_credentials() -> list[str]:
+    """Which auth variables carry something only an enrolled proxy has a use for.
+
+    By value and not by presence, because declaring the whole `RAIL_*` block and
+    filling in the half a deployment needs is the ordinary shape: the packaged
+    `.env.example` ships both keys empty, and a compose file passing
+    `RAIL_AUTH_MODE=${RAIL_AUTH_MODE:-none}` beside an empty token is a proxy
+    that authenticates with nothing. Neither names an intent to attach. A token
+    with a value, or a mode that is not `none`, is configuration that exists for
+    the ticket fetch and for nothing else in this component.
+    """
+    mode = os.environ.get("RAIL_AUTH_MODE", "").strip().lower()
+    token = os.environ.get("RAIL_AUTH_TOKEN", "").strip()
+    carried = (
+        ("RAIL_AUTH_MODE", bool(mode) and mode != "none"),
+        ("RAIL_AUTH_TOKEN", bool(token)),
+    )
+    return [name for name, carries in carried if carries]
+
+
+def _naming_a_rail_center() -> list[str]:
+    """Every variable set on this proxy that names an intent to attach.
+
+    One list, read both by the cross-check in `build_ticket_source` that
+    refuses a Rail Center configured beside an off flag, and by the advice in
+    `build_gateway` that tells an operator what a plain proxy has to shed.
+    Advice derived from a second list stops being true the moment either grows.
+    """
+    _, named, _ = _naming_variables()
+    return named + _naming_credentials()
+
+
 def max_ticket_lifetime() -> float | None:
     """An operator's ceiling on a ticket's lifetime. Unset by default — see
     `xrail_auth.IMPLAUSIBLE_TICKET_LIFETIME_SEC` for why there is no built-in
@@ -264,30 +359,56 @@ def allow_insecure_credential() -> bool:
     return raw in ("1", "true", "yes")
 
 
-#: Platform-wide rather than `RAIL_PROXY_*`: it describes the whole chain's
-#: posture, and the prefix claims only knobs this component owns alone.
-_TICKET_MODES = ("none", "observe", "enforce")
+#: Platform-wide rather than `RAIL_PROXY_*`: whether RailXia is installed is one
+#: fact about a zone, and the prefix claims only knobs this component owns alone.
+#:
+#: It replaces `RAIL_TICKET_MODE`, which named a posture it had stopped
+#: carrying: a gateway takes its posture from the policy bundle, and a proxy has
+#: never had one — `observe` and `enforce` were identical here, both attaching.
+#: What was left was the boolean this is.
+_PLUGIN_ENABLED_VALUES = {"true": True, "false": False}
 
 
-def ticket_mode() -> str:
-    """Whether this proxy attaches an identity to what it forwards.
+def plugin_enabled() -> bool:
+    """Whether this proxy talks to a Rail Center at all.
 
-    Defaults to `enforce`, so absence is the safe state. The proxy implements
-    two of the three values: it attaches nothing under `none` and attaches under
-    both `observe` and `enforce` — what separates observing from enforcing is
-    decided downstream, on a header this component has already sent. Reading a
-    subset of a platform vocabulary is how `RAIL_AUTH_MODE` already works here.
+    Off by default, so a plain proxy that nobody has given RailXia
+    configuration needs no variable and comes up forwarding. The danger of that
+    default — a dropped variable silently unenrolling a proxy that was
+    attaching an hour ago — is not carried by the default but by
+    `build_ticket_source`, which refuses to start where a Rail Center is
+    configured and the flag is off. What that covers is the variable dropped on
+    its own: a deployment that loses the whole `RAIL_*` block at once — an env
+    file that fails to mount — leaves nothing naming an intent to attach, and
+    comes up forwarding.
 
-    An unrecognised value exits 2 rather than falling back, so a binary meeting
-    a vocabulary it does not know fails loudly instead of degrading into the
-    permissive state.
+    Parsed strictly, folding case and taking nothing but `true` or `false`: a
+    proxy that read `ture` as off would unenroll on a typo, which is the silent
+    failure this variable exists to end.
     """
-    mode = os.environ.get("RAIL_TICKET_MODE", "").strip().lower() or "enforce"
-    if mode not in _TICKET_MODES:
+    _refuse_retired_ticket_mode()
+    raw = os.environ.get("RAIL_PLUGIN_ENABLED", "").strip().lower()
+    if not raw:
+        return False
+    if raw not in _PLUGIN_ENABLED_VALUES:
+        raise ConfigError(f"RAIL_PLUGIN_ENABLED={raw!r} is not true or false")
+    return _PLUGIN_ENABLED_VALUES[raw]
+
+
+def _refuse_retired_ticket_mode() -> None:
+    """Stop on a `RAIL_TICKET_MODE` nothing reads any more.
+
+    Ignoring it is the failure the whole change exists to end: an operator who
+    sets a variable believing it configures a posture, and gets whatever the
+    default happens to be. Named in the refusal rather than merely rejected, so
+    the message is the migration.
+    """
+    if os.environ.get("RAIL_TICKET_MODE", "").strip():
         raise ConfigError(
-            f"RAIL_TICKET_MODE={mode!r} is not one of {', '.join(_TICKET_MODES)}"
+            "RAIL_TICKET_MODE is no longer read. Whether this proxy talks to a "
+            "Rail Center is RAIL_PLUGIN_ENABLED=true|false; the posture it used "
+            "to name is a gateway's, and arrives in the policy bundle."
         )
-    return mode
 
 
 def refresh_seconds() -> float:
@@ -302,33 +423,56 @@ def refresh_seconds() -> float:
 def build_ticket_source() -> TicketSource | None:
     """The source this proxy fetches its own ticket from, or None.
 
-    The mode and the issuer are cross-checked both ways. A proxy that means to
+    The flag and the issuer are cross-checked both ways. A proxy that means to
     attach with nothing to fetch from would otherwise come up healthy and
-    forward every call unstamped; `none` beside a configured Rail Center is
-    contradictory intent, and guessing which half was meant is not this
-    component's call.
-    """
-    mode = ticket_mode()
-    _, named, missing = _naming_variables()
+    forward every call unstamped; a Rail Center configured beside a plugin that
+    is off is contradictory intent, and guessing which half was meant is not
+    this component's call.
 
-    # The mode is read before the settings are, so `none` beside a *partly*
-    # configured Rail Center reports the contradiction rather than the
+    That second check is what makes `RAIL_PLUGIN_ENABLED` safe to default off.
+    A deployment that loses the flag is a deployment that still names a Rail
+    Center — by its address or by the credential it authenticates to it with —
+    so it stops here instead of quietly becoming a plain proxy.
+    """
+    enabled = plugin_enabled()
+    _, _, missing = _naming_variables()
+
+    # The flag is read before the settings are, so an off plugin beside a
+    # *partly* configured Rail Center reports the contradiction rather than the
     # incompleteness — an operator who set one variable by accident is not
     # being asked to finish the job.
-    if mode == "none":
-        if named:
+    if not enabled:
+        # The credential names a Rail Center as much as the address does. The
+        # two ordinarily arrive from different places — a token from a Secret,
+        # the address from a ConfigMap — so a deployment can lose the three and
+        # keep the one variable nothing but an enrolled proxy has a use for,
+        # which is a loss the three on their own do not see.
+        naming = _naming_a_rail_center()
+        if naming:
             raise ConfigError(
-                "RAIL_TICKET_MODE=none attaches nothing, but "
-                + ", ".join(named)
-                + " is set — one of the two was not meant"
+                "RAIL_PLUGIN_ENABLED is off, so nothing is attached, but "
+                + ", ".join(naming)
+                + " is set — one of the two was not meant. Set "
+                "RAIL_PLUGIN_ENABLED=true to attach, or unset them to forward "
+                "without a ticket."
             )
         return None
     if missing:
+        # The advice names the whole action rather than the flag alone, and
+        # names it out of `_naming_a_rail_center()` rather than a list of its
+        # own: a proxy that cannot find its Rail Center may still name one by
+        # the part it does hold — an address, or the credential it would fetch
+        # with — and unsetting the flag alone lands it on the contradictory-
+        # intent refusal above. Where nothing else names one there is nothing
+        # to add, which is the shape the advice was written for.
+        also_naming = _naming_a_rail_center()
         raise ConfigError(
-            f"RAIL_TICKET_MODE={mode!r} attaches an identity, so a Rail Center "
+            "RAIL_PLUGIN_ENABLED=true attaches an identity, so a Rail Center "
             "to fetch one from is required; not set: "
             + ", ".join(missing)
-            + ". To forward without one, set RAIL_TICKET_MODE=none."
+            + ". To forward without one, unset RAIL_PLUGIN_ENABLED"
+            + (" and " + ", ".join(also_naming) if also_naming else "")
+            + "."
         )
     # `missing` is empty, so this returns the dict rather than None.
     settings = ticket_settings()
@@ -560,19 +704,19 @@ def build_gateway(holder: TicketHolder | None) -> FastMCP:
     A mount's name becomes the prefix on every tool it re-exposes, so the
     agent sees `<name>_<tool>`.
 
-    `holder` is None under `RAIL_TICKET_MODE=none`, and then nothing is
-    attached to what goes out — not `x-rail`, and not `x-rail-status` either.
-    That is a different state from failing closed, where a proxy that means to
-    identify its agent could not: pass-through says nothing about identity at
-    all, and writing a status header would claim it had tried.
+    `holder` is None where the plugin is off, and then nothing is attached to
+    what goes out — not `x-rail`, and not `x-rail-status` either. That is a
+    different state from failing closed, where a proxy that means to identify
+    its agent could not: pass-through says nothing about identity at all, and
+    writing a status header would claim it had tried.
     """
     gateway = FastMCP(name="datrail-proxy")
     timeout = upstream_timeout()
     injector = XRailInjector(holder) if holder is not None else None
     # Read once, at build time. Per request it would be an environment lookup
     # on the hot path, and a route that could raise a ConfigError into a 500
-    # long after startup — `ticket_mode` raises on a value it does not know.
-    mode = ticket_mode()
+    # long after startup — `plugin_enabled` raises on a value it does not know.
+    enabled = plugin_enabled()
 
     for srv in load_servers():
         parts = urlsplit(srv["url"])
@@ -587,10 +731,19 @@ def build_gateway(holder: TicketHolder | None) -> FastMCP:
             # `auth` and httpx derives Basic auth only when there is none: left
             # alone this credential is silently dropped and every call to the
             # upstream 401s with nothing naming the cause.
+            #
+            # The advice names the whole action rather than the flag alone,
+            # and names it out of `_naming_a_rail_center()` rather than a list
+            # of its own: an injector exists only where the flag is on *and* a
+            # Rail Center is configured, so advice short of what the
+            # cross-check keys on lands an operator on
+            # `build_ticket_source`'s contradictory-intent refusal instead.
             raise ConfigError(
                 f"upstream '{srv['name']}' carries a credential in its url, "
                 "which cannot be sent while an x-rail ticket is being attached "
-                "— remove it, or set RAIL_TICKET_MODE=none"
+                "— remove it, or unset RAIL_PLUGIN_ENABLED and "
+                + ", ".join(_naming_a_rail_center())
+                + " to forward without a ticket"
             )
         if injector is not None and _in_the_clear(srv["url"]):
             # Not a refusal: an http upstream on a private network is an
@@ -643,7 +796,7 @@ def build_gateway(holder: TicketHolder | None) -> FastMCP:
         return JSONResponse(
             {
                 "status": "ok",
-                "ticket_mode": mode,
+                "plugin_enabled": enabled,
                 "ticket": holder.status if holder is not None else None,
             }
         )
@@ -826,7 +979,9 @@ async def main() -> int:
         return 2
 
     if holder is None:
-        log.info("RAIL_TICKET_MODE=none — nothing is attached to what is forwarded")
+        log.info(
+            "RAIL_PLUGIN_ENABLED is off — nothing is attached to what is forwarded"
+        )
     else:
         # Awaited, so a wrong sandbox name or a rejected credential shows up
         # while an operator is watching. Never fatal, and the wait is bounded by
