@@ -29,7 +29,7 @@ this:
 |---|---|---|
 | `proxy` | registered as `e2e-sandbox` | `x-rail: e2e-opaque-token` |
 | `proxy-unregistered` | a sandbox name Rail Center does not know | `x-rail-status: not-found`, no identity |
-| `proxy-passthrough` | `RAIL_TICKET_MODE=none` | neither header |
+| `proxy-passthrough` | no RailXia configuration at all | neither header |
 
 The third is the one worth understanding: it is *not* the fail-closed path. A
 proxy with no control plane and a proxy whose ticket lapsed are different

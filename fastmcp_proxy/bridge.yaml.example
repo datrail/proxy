@@ -12,13 +12,15 @@
 #   RAIL_PROXY_UPSTREAM_TIMEOUT_SECONDS              (30)
 #       How long a call waits on an upstream before the agent is told it timed
 #       out.
-#   RAIL_TICKET_MODE         none | observe | enforce (enforce)
-#       Whether this proxy attaches an identity to what it forwards. `none`
-#       attaches neither header; the other two attach `x-rail` when a ticket is
-#       held and `x-rail-status` when one could not be got. Cross-checked
-#       against the three variables below, both ways: a mode that attaches with
-#       no Rail Center to fetch from stops at startup, and so does `none`
-#       beside one that is configured.
+#   RAIL_PLUGIN_ENABLED      true | false             (false)
+#       Whether this proxy talks to a Rail Center at all. Off, it is a plain
+#       proxy and attaches neither header. On, it attaches `x-rail` when a
+#       ticket is held and `x-rail-status` when one could not be got.
+#       Cross-checked against the three variables below, both ways: on with no
+#       Rail Center to fetch from stops at startup, and so does off beside one
+#       that is configured — which is what makes the off default safe, since a
+#       deployment that loses the flag is one that still names a Rail Center.
+#       Parsed strictly: nothing but `true` or `false`, case folded.
 #
 # Where a Rail Center issues this proxy a ticket, three name it — all three
 # together, or none:
@@ -46,8 +48,25 @@
 #       Send the credential to a plaintext, non-loopback Rail Center anyway.
 #       Refused by default; SECURITY.md says what that refusal is for.
 #
+# `schema_version` is this file's format, and it is not the policy bundle's.
+# Rail Center writes the bundle's; a release of this proxy writes what belongs
+# here. They share the word so the concept is learned once, and they do not move
+# together. The major is what is compared — a proxy reading 1.x takes any 1.y,
+# ignoring whatever that minor added, and refuses a 2.x file outright rather
+# than serving the parts it recognises. An upstream entry is the one place an
+# unknown key is warned about. Omitting the version is read as 1.0 and warned
+# about.
+#
 # `name` is the mount namespace, so the agent sees the upstream's tools as
-# `<name>_<tool>`. Renaming it renames every tool.
+# `<name>_<tool>`. Renaming it renames every tool. The namespace is
+# unconditional — a single upstream is namespaced too, because two upstreams
+# each exposing a `search` are indistinguishable in a `tools/call` without it,
+# and a file that stopped namespacing once a second entry appeared would rename
+# every tool of the first. FastMCP's mount takes an optional namespace and this
+# proxy deliberately does not expose that knob: there is no value of this file
+# that produces bare tool names.
+
+schema_version: "1.0"
 
 mcp:
   servers:

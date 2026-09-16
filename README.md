@@ -17,13 +17,20 @@ cd proxy
 cp fastmcp_proxy/bridge.yaml.example bridge.yaml
 docker run --rm -p 8091:8091 \
   -v "$PWD/bridge.yaml:/app/fastmcp_proxy/bridge.yaml:ro" \
-  -e RAIL_TICKET_MODE=none \
   ghcr.io/datrail/proxy:latest
 ```
 
-To attach an identity, add `RAIL_CENTER_URL`, `RAIL_HOST_ID`, and
-`RAIL_SANDBOX_NAME`; [`.env.example`](.env.example) documents all environment
-variables. The proxy serves MCP at `POST /mcp` and liveness at `GET /health`.
+That is the whole of forwarding-only: `RAIL_PLUGIN_ENABLED` is off by default,
+so a proxy nobody has given RailXia configuration needs no variable at all.
+
+To attach an identity, set `RAIL_PLUGIN_ENABLED=true` and add
+`RAIL_CENTER_URL`, `RAIL_HOST_ID`, and `RAIL_SANDBOX_NAME` — those three beside
+a plugin that is off is refused at startup, so a deployment cannot lose the flag
+by itself and quietly stop attaching. Losing the whole block at once still can:
+an env file that fails to mount takes the flag and the three with it, and the
+proxy comes up as a plain proxy, saying so at INFO. Watch that the variables
+arrive, not just that the container is healthy. [`.env.example`](.env.example) documents all
+environment variables. The proxy serves MCP at `POST /mcp` and liveness at `GET /health`.
 
 ## Architecture
 
@@ -35,10 +42,11 @@ flowchart LR
   gateway --> server[MCP server]
 ```
 
-Agent-supplied headers do not cross the proxy boundary. In `observe` or
-`enforce` mode, the proxy fetches and refreshes its own ticket; if no valid
-ticket is available it forwards no identity and sets an `x-rail-status` reason.
-The fetch response is defined by [`spec/ticket-fetch.schema.json`](spec/ticket-fetch.schema.json).
+Agent-supplied headers do not cross the proxy boundary. With
+`RAIL_PLUGIN_ENABLED=true` the proxy fetches and refreshes its own ticket; if no
+valid ticket is available it forwards no identity and sets an `x-rail-status`
+reason. The fetch response is defined by
+[`spec/ticket-fetch.schema.json`](spec/ticket-fetch.schema.json).
 
 ## Security
 

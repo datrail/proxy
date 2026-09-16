@@ -126,12 +126,11 @@ def test_an_unusable_url_is_reported_rather_than_raised_from_the_mount(
 
 
 def test_an_unparseable_url_is_reported_rather_than_raised_from_the_build(
-    write_config, monkeypatch
+    write_config,
 ):
     """`http://[::1:8080/mcp` passes the scheme check and dies in `urlsplit`,
     which `build_gateway` calls outside any handler — a traceback and exit 1
     where the file's other mistakes give a sentence and exit 2."""
-    monkeypatch.setenv("RAIL_TICKET_MODE", "none")
     write_config(
         'mcp:\n  servers:\n    - name: delivery\n      url: "http://[::1:8080/mcp"\n'
     )
@@ -522,11 +521,10 @@ def test_two_upstreams_cannot_share_a_namespace(write_config):
         proxy_module.load_servers()
 
 
-def test_no_rail_center_configured_is_a_supported_state(monkeypatch):
+def test_no_rail_center_configured_is_a_supported_state():
     """An open-source deployment with no control plane. The proxy forwards and
-    fetches nothing — but it has to say so, because the default attaches."""
-    monkeypatch.setenv("RAIL_TICKET_MODE", "none")
-
+    fetches nothing, and says nothing to get there — an empty environment is
+    the plain-proxy configuration."""
     assert proxy_module.ticket_settings() is None
     assert proxy_module.build_ticket_source() is None
 
@@ -644,6 +642,7 @@ async def test_a_startup_fetch_reports_a_fingerprint_and_never_the_ticket(
     # Left alone this lands on the already-expired branch, and the one whose
     # whole contract is "a fingerprint, never the ticket" is never reached.
     body["tickets"][0]["expires_at"] = "2099-01-01T00:00:00Z"
+    monkeypatch.setenv("RAIL_PLUGIN_ENABLED", "true")
     monkeypatch.setenv("RAIL_CENTER_URL", "https://rc.invalid")
     monkeypatch.setenv("RAIL_HOST_ID", "e2e-host")
     monkeypatch.setenv("RAIL_SANDBOX_NAME", "e2e-sandbox")
@@ -675,6 +674,7 @@ async def test_an_issuer_that_is_down_does_not_stop_startup(
     could not be right is refused earlier."""
     import httpx
 
+    monkeypatch.setenv("RAIL_PLUGIN_ENABLED", "true")
     monkeypatch.setenv("RAIL_CENTER_URL", "https://rc.invalid")
     monkeypatch.setenv("RAIL_HOST_ID", "h")
     monkeypatch.setenv("RAIL_SANDBOX_NAME", "s")
@@ -778,6 +778,7 @@ def test_the_insecure_credential_override_is_read_from_its_variable(
 def test_the_override_reaches_the_source_it_governs(monkeypatch):
     """Parsing the variable and never passing it on is the same as not having
     it, and only the direction that breaks an operator would be silent."""
+    monkeypatch.setenv("RAIL_PLUGIN_ENABLED", "true")
     monkeypatch.setenv("RAIL_CENTER_URL", "http://rail-center:8000")
     monkeypatch.setenv("RAIL_HOST_ID", "h")
     monkeypatch.setenv("RAIL_SANDBOX_NAME", "s")
@@ -822,6 +823,7 @@ def test_the_ticket_timeout_is_not_the_upstream_one(monkeypatch):
     unreachable Rail Center delays the bind."""
     monkeypatch.setenv("RAIL_PROXY_UPSTREAM_TIMEOUT_SECONDS", "300")
     monkeypatch.setenv("RAIL_PROXY_TICKET_TIMEOUT_SECONDS", "4")
+    monkeypatch.setenv("RAIL_PLUGIN_ENABLED", "true")
     monkeypatch.setenv("RAIL_CENTER_URL", "https://rc.invalid")
     monkeypatch.setenv("RAIL_HOST_ID", "h")
     monkeypatch.setenv("RAIL_SANDBOX_NAME", "s")
@@ -880,7 +882,7 @@ async def test_startup_fetches_the_ticket_rather_than_only_building_the_source(
     Disconnected, every other test still passes and the feature is gone."""
     import httpx
 
-    monkeypatch.setenv("RAIL_TICKET_MODE", "enforce")
+    monkeypatch.setenv("RAIL_PLUGIN_ENABLED", "true")
     monkeypatch.setenv("RAIL_CENTER_URL", "https://rc.invalid")
     monkeypatch.setenv("RAIL_HOST_ID", "h")
     monkeypatch.setenv("RAIL_SANDBOX_NAME", "s")
@@ -929,6 +931,7 @@ async def test_startup_fetches_the_ticket_rather_than_only_building_the_source(
 
 def test_the_lifetime_bound_reaches_the_source_it_configures(monkeypatch):
     """Parsed correctly and never passed on is the same as not having it."""
+    monkeypatch.setenv("RAIL_PLUGIN_ENABLED", "true")
     monkeypatch.setenv("RAIL_CENTER_URL", "https://rc.invalid")
     monkeypatch.setenv("RAIL_HOST_ID", "h")
     monkeypatch.setenv("RAIL_SANDBOX_NAME", "s")
@@ -1015,6 +1018,7 @@ def test_the_bearer_token_reaches_the_source_it_configures(monkeypatch):
     """Only the token's truthiness is pinned elsewhere, as a side effect of the
     plaintext refusal. A wrong value 401s at Rail Center, holds no ticket, and
     still logs `(bearer)` — the same shape as no wiring at all."""
+    monkeypatch.setenv("RAIL_PLUGIN_ENABLED", "true")
     monkeypatch.setenv("RAIL_CENTER_URL", "https://rc.invalid")
     monkeypatch.setenv("RAIL_HOST_ID", "h")
     monkeypatch.setenv("RAIL_SANDBOX_NAME", "s")
@@ -1130,7 +1134,7 @@ async def test_pass_through_is_announced_rather_than_silent(
     with caplog.at_level("INFO"):
         assert await proxy_module.main() == 0
 
-    assert "RAIL_TICKET_MODE=none" in caplog.text
+    assert "RAIL_PLUGIN_ENABLED is off" in caplog.text
 
 
 def test_redaction_reaches_a_logger_that_never_propagates_to_root():
@@ -1523,48 +1527,77 @@ def test_a_template_that_does_not_match_its_arguments_is_still_redacted():
 
 
 # ─────────────────────────────────────────────────────────────────────
-#  RAIL_TICKET_MODE
+#  RAIL_PLUGIN_ENABLED
 # ─────────────────────────────────────────────────────────────────────
 
 
 @pytest.mark.parametrize(
     ("value", "expected"),
     [
-        ("", "enforce"),
-        ("none", "none"),
-        ("observe", "observe"),
-        ("enforce", "enforce"),
-        ("  ENFORCE  ", "enforce"),
+        ("", False),
+        ("false", False),
+        ("true", True),
+        ("  TRUE  ", True),
+        ("  False  ", False),
     ],
-    ids=["unset", "none", "observe", "enforce", "padded"],
+    ids=["unset", "false", "true", "padded-true", "padded-false"],
 )
-def test_the_ticket_mode_defaults_to_attaching(monkeypatch, value, expected):
-    """Absence is the safe state. Defaulted to `none`, a deployment that lost
-    its Rail Center variables would come up healthy and forward every call
-    unstamped — which is exactly the failure the mode exists to catch."""
+def test_the_plugin_is_off_unless_it_is_turned_on(monkeypatch, value, expected):
+    """A proxy nobody has given RailXia configuration needs no variable at all.
+    What makes that default safe is not the default — it is the refusal in
+    `build_ticket_source` below, which stops the one deployment where absence
+    would be dangerous: the one that still names a Rail Center."""
+    monkeypatch.setenv("RAIL_PLUGIN_ENABLED", value)
+
+    assert proxy_module.plugin_enabled() is expected
+
+
+@pytest.mark.parametrize("value", ["ture", "1", "yes", "on", "enforce"], ids=str)
+def test_anything_that_is_not_true_or_false_is_refused(monkeypatch, value):
+    """Parsed strictly rather than truthily. `1` and `yes` are what an operator
+    means, but accepting them means accepting that everything else is `false` —
+    and a proxy that read `ture` as off would unenroll on a typo, which is the
+    silent failure this variable exists to end."""
+    monkeypatch.setenv("RAIL_PLUGIN_ENABLED", value)
+
+    with pytest.raises(proxy_module.ConfigError, match="RAIL_PLUGIN_ENABLED"):
+        proxy_module.plugin_enabled()
+
+
+@pytest.mark.parametrize("value", ["enforce", " enforce ", "\tobserve\n"], ids=repr)
+def test_a_leftover_ticket_mode_stops_the_proxy_and_names_its_replacement(
+    monkeypatch, value
+):
+    """Ignoring it is the failure this whole change exists to end: an operator
+    who sets a variable believing it configures a posture, and silently gets
+    whatever the default happens to be. Padding is not what decides it: a value
+    surrounded by spaces is a value an operator wrote."""
     monkeypatch.setenv("RAIL_TICKET_MODE", value)
 
-    assert proxy_module.ticket_mode() == expected
+    with pytest.raises(proxy_module.ConfigError) as info:
+        proxy_module.plugin_enabled()
+
+    assert "RAIL_TICKET_MODE" in str(info.value)
+    assert "RAIL_PLUGIN_ENABLED" in str(info.value)
 
 
-@pytest.mark.parametrize("value", ["strict", "off", "true", "en force"], ids=str)
-def test_an_unknown_ticket_mode_exits_rather_than_falling_back(monkeypatch, value):
-    """A binary meeting a vocabulary it does not know fails loudly. Falling back
-    to the permissive value would let a platform add a mode and silently demote
-    every component that predates it; falling back to the strict one would take
-    a fleet down on a typo. Neither is this component's call."""
+@pytest.mark.parametrize("value", ["", " ", "\t\n"], ids=repr)
+def test_a_ticket_mode_carrying_no_value_is_not_a_leftover(monkeypatch, value):
+    """The other side of that boundary, and the side a migration lands on:
+    `v0.1.0` shipped `RAIL_TICKET_MODE=` in its `.env.example`, so an operator
+    who blanks the line rather than deleting it holds an empty variable and not
+    a posture. Refusing that would stop a deployment over a line configuring
+    nothing."""
     monkeypatch.setenv("RAIL_TICKET_MODE", value)
 
-    with pytest.raises(proxy_module.ConfigError, match="RAIL_TICKET_MODE"):
-        proxy_module.ticket_mode()
+    assert proxy_module.plugin_enabled() is False
 
 
-@pytest.mark.parametrize("mode", ["observe", "enforce"], ids=str)
-def test_attaching_without_an_issuer_to_fetch_from_is_a_config_error(monkeypatch, mode):
+def test_attaching_without_an_issuer_to_fetch_from_is_a_config_error(monkeypatch):
     """The half of the cross-check that matters most: a proxy that meant to
     identify its agent and lost `RAIL_CENTER_URL` would otherwise come up
     healthy, forward everything unstamped, and be discovered downstream."""
-    monkeypatch.setenv("RAIL_TICKET_MODE", mode)
+    monkeypatch.setenv("RAIL_PLUGIN_ENABLED", "true")
 
     with pytest.raises(proxy_module.ConfigError) as info:
         proxy_module.build_ticket_source()
@@ -1574,7 +1607,46 @@ def test_attaching_without_an_issuer_to_fetch_from_is_a_config_error(monkeypatch
     assert "RAIL_CENTER_URL" in str(info.value)
     assert "RAIL_HOST_ID" in str(info.value)
     assert "RAIL_SANDBOX_NAME" in str(info.value)
-    assert "RAIL_TICKET_MODE=none" in str(info.value)
+    # Nothing else names a Rail Center here, so unsetting the flag is the whole
+    # action and the advice adds nothing to it.
+    assert str(info.value).endswith("unset RAIL_PLUGIN_ENABLED.")
+
+
+@pytest.mark.parametrize(
+    "env",
+    [
+        {
+            "RAIL_AUTH_MODE": "bearer",
+            "RAIL_AUTH_TOKEN": "rc_service_token_abc123",
+        },
+        {"RAIL_CENTER_URL": "https://rc.invalid"},
+    ],
+    ids=["credential-only", "address-only"],
+)
+def test_attaching_without_an_issuer_advises_shedding_the_whole_intent(
+    monkeypatch, env
+):
+    """A proxy that cannot find its Rail Center may still name one by the part
+    it does hold, so advice naming the flag alone sends an operator straight
+    into the contradictory-intent refusal above — a second container-down
+    message for following the first one exactly."""
+    monkeypatch.setenv("RAIL_PLUGIN_ENABLED", "true")
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+
+    with pytest.raises(proxy_module.ConfigError) as info:
+        proxy_module.build_ticket_source()
+
+    assert "unset RAIL_PLUGIN_ENABLED" in str(info.value)
+    # From `_naming_a_rail_center()`, the expression the cross-check evaluates,
+    # so the advice cannot be short of what that check keys on.
+    assert all(name in str(info.value) for name in proxy_module._naming_a_rail_center())
+    # Which is what that has to mean: unset exactly what the message names and
+    # this proxy forwards as a plain one, with nothing left to stop on.
+    for name in ("RAIL_PLUGIN_ENABLED", *env):
+        if name in str(info.value):
+            monkeypatch.delenv(name)
+    assert proxy_module.build_ticket_source() is None
 
 
 @pytest.mark.parametrize(
@@ -1591,21 +1663,25 @@ def test_a_partly_configured_issuer_names_only_what_is_missing(
 ):
     """Naming all three when two are already set sends an operator to re-check
     work they did correctly."""
-    monkeypatch.setenv("RAIL_TICKET_MODE", "enforce")
+    monkeypatch.setenv("RAIL_PLUGIN_ENABLED", "true")
     monkeypatch.setenv(present, "value")
 
     with pytest.raises(proxy_module.ConfigError) as info:
         proxy_module.build_ticket_source()
 
-    assert present not in str(info.value)
-    assert all(name in str(info.value) for name in absent)
+    # The diagnosis only. The advice below it names the one that is set on
+    # purpose — that is what an operator sheds to forward as a plain proxy —
+    # so the message is read up to where it stops describing and starts
+    # advising.
+    diagnosis = str(info.value).split(". To forward without one")[0]
+    assert present not in diagnosis
+    assert all(name in diagnosis for name in absent)
 
 
 def test_pass_through_beside_a_stray_variable_reports_the_contradiction(monkeypatch):
-    """One naming variable left set beside `none` is contradictory intent, not
-    an unfinished configuration — telling that operator to set the other two
-    would be advising them to finish something they did not start."""
-    monkeypatch.setenv("RAIL_TICKET_MODE", "none")
+    """One naming variable left set beside an off plugin is contradictory
+    intent, not an unfinished configuration — telling that operator to set the
+    other two would be advising them to finish something they did not start."""
     monkeypatch.setenv("RAIL_HOST_ID", "h")
 
     with pytest.raises(proxy_module.ConfigError) as info:
@@ -1617,17 +1693,73 @@ def test_pass_through_beside_a_stray_variable_reports_the_contradiction(monkeypa
 
 
 def test_a_configured_issuer_that_will_never_be_asked_is_a_config_error(monkeypatch):
-    """The other half. `none` beside a configured Rail Center is contradictory
-    intent, and guessing which of the two was meant is not this component's
-    call — silently honouring the mode would leave three variables set and
-    nothing reading them."""
-    monkeypatch.setenv("RAIL_TICKET_MODE", "none")
+    """The other half, and the one that makes the off default safe. A Rail
+    Center configured beside a plugin nobody turned on is the shape of a
+    deployment that lost its flag, so it stops rather than quietly becoming a
+    plain proxy — which is what PTH.G1 rejected deciding from presence alone."""
     monkeypatch.setenv("RAIL_CENTER_URL", "https://rc.invalid")
     monkeypatch.setenv("RAIL_HOST_ID", "h")
     monkeypatch.setenv("RAIL_SANDBOX_NAME", "s")
 
-    with pytest.raises(proxy_module.ConfigError, match="was not meant"):
+    with pytest.raises(proxy_module.ConfigError) as info:
         proxy_module.build_ticket_source()
+
+    assert "was not meant" in str(info.value)
+    # Both remedies, because the diagnosis alone leaves an operator holding a
+    # container that is down and a choice about which half they meant. This is
+    # also where `build_gateway`'s credential-in-url refusal sends them, so it
+    # is the advice that has to survive.
+    assert "Set RAIL_PLUGIN_ENABLED=true to attach" in str(info.value)
+    assert "unset them to forward without a ticket" in str(info.value)
+
+
+@pytest.mark.parametrize(
+    ("env", "named"),
+    [
+        ({"RAIL_AUTH_TOKEN": "rc_service_token_abc123"}, "RAIL_AUTH_TOKEN"),
+        ({"RAIL_AUTH_MODE": "bearer"}, "RAIL_AUTH_MODE"),
+    ],
+    ids=["token", "mode"],
+)
+def test_a_rail_center_credential_alone_is_a_configured_issuer_too(
+    monkeypatch, env, named
+):
+    """A split-source loss, which is the ordinary Kubernetes shape: the token
+    comes from a Secret and the address from a ConfigMap, so losing one leaves
+    the other. Without this the proxy comes up forwarding unstamped while
+    holding a credential nothing but an enrolled proxy has a use for."""
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+
+    with pytest.raises(proxy_module.ConfigError) as info:
+        proxy_module.build_ticket_source()
+
+    assert "was not meant" in str(info.value)
+    assert named in str(info.value)
+
+
+@pytest.mark.parametrize(
+    "env",
+    [
+        {"RAIL_AUTH_MODE": "", "RAIL_AUTH_TOKEN": ""},
+        {"RAIL_AUTH_MODE": "none", "RAIL_AUTH_TOKEN": ""},
+        {"RAIL_AUTH_MODE": "NONE", "RAIL_AUTH_TOKEN": "  "},
+        {"RAIL_AUTH_MODE": " none ", "RAIL_AUTH_TOKEN": ""},
+    ],
+    ids=["env-example", "compose-default", "padded-token", "padded-mode"],
+)
+def test_auth_variables_carrying_no_credential_are_not_a_configured_issuer(
+    monkeypatch, env
+):
+    """The shapes that ship: `.env.example` carries both keys empty, and the
+    demo compose passes `RAIL_AUTH_MODE=${RAIL_AUTH_MODE:-none}` beside an empty
+    token to every proxy it runs. A proxy that authenticates with nothing names
+    no intent to attach, and stopping those would refuse a configuration that
+    forwards correctly today."""
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+
+    assert proxy_module.build_ticket_source() is None
 
 
 @pytest.mark.parametrize(
@@ -1657,7 +1789,7 @@ async def test_the_refresh_interval_reaches_the_holder(config, upstream, monkeyp
     """Parsed correctly and never passed on is the same as not having it."""
     import httpx
 
-    monkeypatch.setenv("RAIL_TICKET_MODE", "enforce")
+    monkeypatch.setenv("RAIL_PLUGIN_ENABLED", "true")
     monkeypatch.setenv("RAIL_CENTER_URL", "https://rc.invalid")
     monkeypatch.setenv("RAIL_HOST_ID", "h")
     monkeypatch.setenv("RAIL_SANDBOX_NAME", "s")
@@ -1703,7 +1835,7 @@ async def test_the_refresh_loop_does_not_outlive_the_server(
     that surfaces as a traceback on an otherwise clean SIGTERM."""
     import httpx
 
-    monkeypatch.setenv("RAIL_TICKET_MODE", "enforce")
+    monkeypatch.setenv("RAIL_PLUGIN_ENABLED", "true")
     monkeypatch.setenv("RAIL_CENTER_URL", "https://rc.invalid")
     monkeypatch.setenv("RAIL_HOST_ID", "h")
     monkeypatch.setenv("RAIL_SANDBOX_NAME", "s")
@@ -1768,14 +1900,11 @@ def test_a_credential_in_a_mapping_argument_is_redacted_too():
     assert "***@rc.invalid" in record.getMessage()
 
 
-def test_an_unread_upstream_key_is_announced_rather_than_refused(
-    write_config, caplog, monkeypatch
-):
+def test_an_unread_upstream_key_is_announced_rather_than_refused(write_config, caplog):
     """`transport: streamable_http` names the only transport this proxy speaks,
     so refusing to start over it is a worse outcome than the silence the
     warning replaces — but `headers:` is the same shape and does lose a
     credential, so it is said out loud."""
-    monkeypatch.setenv("RAIL_TICKET_MODE", "none")
     write_config(
         "mcp:\n  servers:\n"
         "    - name: delivery\n      url: http://gateway.invalid:8080/mcp\n"
@@ -1793,3 +1922,111 @@ def test_an_unread_upstream_key_is_announced_rather_than_refused(
     assert len(warned) == 1
     assert "`headers`" in warned[0]
     assert "`transport`" in warned[0]
+
+
+# ─────────────────────────────────────────────────────────────────────
+#  schema_version
+# ─────────────────────────────────────────────────────────────────────
+
+
+@pytest.mark.parametrize("value", ['"1.0"', '"1.7"', '"1.0.0"', "1.0", "1"], ids=str)
+def test_any_minor_of_the_major_this_proxy_reads_is_served(write_config, caplog, value):
+    """The major is what is compared. A minor bump is a compatible addition, so
+    an older proxy reads the file and warns about the keys it does not know —
+    which is the machinery `headers:` already exercises. Quoting is the
+    operator's choice and not a version: `1.0` unquoted arrives as a float and
+    `1` as an int, and both are what they meant."""
+    write_config(
+        f"schema_version: {value}\n"
+        "mcp:\n  servers:\n    - name: delivery\n      url: http://a.invalid/mcp\n"
+    )
+
+    with caplog.at_level("WARNING"):
+        servers = proxy_module.load_servers()
+
+    assert [s["name"] for s in servers] == ["delivery"]
+    assert not [r for r in caplog.records if "schema_version" in r.getMessage()]
+
+
+@pytest.mark.parametrize(
+    "value",
+    ['"2.0"', '"0.9"', '"one"', '"1.x"', '""', '"1²"', '"١.0"'],
+    ids=str,
+)
+def test_a_version_this_proxy_cannot_read_refuses_to_start(write_config, value):
+    """Reported and refused rather than half-read. A file written for a reader
+    this is not is not a file to serve the recognised parts of — that is the
+    silent drift the field exists to end, and it is read at startup where an
+    operator sees the refusal rather than discovering it.
+
+    The last two are the digits that are not ASCII: a superscript, which `int`
+    rejects, and another script's decimal one, which `int` reads as a 1. Both
+    arrive here as a refusal naming the version rather than as a traceback or
+    as a served file."""
+    write_config(
+        f"schema_version: {value}\n"
+        "mcp:\n  servers:\n    - name: delivery\n      url: http://a.invalid/mcp\n"
+    )
+
+    with pytest.raises(proxy_module.ConfigError, match="schema_version"):
+        proxy_module.load_servers()
+
+
+def test_a_file_written_before_the_field_existed_is_read_and_warned_about(
+    write_config, caplog
+):
+    """Every file written before the field existed omits it, and stopping those
+    is a cost with nothing bought: a file with no version is a file with no
+    field this proxy is missing. The warning is what gets the line added before
+    the format does move."""
+    write_config(
+        "mcp:\n  servers:\n    - name: delivery\n      url: http://a.invalid/mcp\n"
+    )
+
+    with caplog.at_level("WARNING"):
+        servers = proxy_module.load_servers()
+
+    assert [s["name"] for s in servers] == ["delivery"]
+    assert "no schema_version" in caplog.text
+
+
+def test_the_version_is_settled_before_the_upstreams_are_parsed(write_config):
+    """A loader that read `mcp.servers` first would report the shape it assumed
+    rather than the version that told it not to assume one — so a 2.x file whose
+    upstream list also moved reports the list, and an operator fixes the wrong
+    thing."""
+    write_config('schema_version: "2.0"\nmcp: not-a-mapping\n')
+
+    with pytest.raises(proxy_module.ConfigError, match="schema_version"):
+        proxy_module.load_servers()
+
+
+#: The config files this repository ships, each of which some instruction tells
+#: someone to run: the README's quick start copies the example and mounts it,
+#: and the e2e stack mounts its own.
+_REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
+SHIPPED_CONFIGS = (
+    _REPO_ROOT / "fastmcp_proxy" / "bridge.yaml.example",
+    _REPO_ROOT / "e2e" / "bridge.yaml",
+)
+
+
+@pytest.mark.parametrize(
+    "path", SHIPPED_CONFIGS, ids=lambda p: str(p.relative_to(_REPO_ROOT))
+)
+def test_a_config_this_repository_ships_is_one_this_proxy_reads(
+    monkeypatch, caplog, path
+):
+    """The version line is startup-fatal, and these are the two files an
+    instruction hands someone: the README's quick start copies the example and
+    mounts it, and `e2e/compose.yml` mounts the other. Wrong or missing, the
+    first is a container that stops and the second is a warning nobody reads —
+    neither of which any other test sees, because nothing else loads a file that
+    is not written by the test itself."""
+    monkeypatch.setenv("RAIL_PROXY_CONFIG_FILE", str(path))
+
+    with caplog.at_level("WARNING"):
+        servers = proxy_module.load_servers()
+
+    assert [s["name"] for s in servers]
+    assert not [r for r in caplog.records if "schema_version" in r.getMessage()]
