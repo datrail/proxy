@@ -14,7 +14,7 @@ x-proxy: &proxy
     context: ..
     dockerfile: Dockerfile
   volumes:
-    - ./bridge.yaml:/app/fastmcp_proxy/bridge.yaml:ro
+    - ./bridge.yaml:/app/standalone/bridge.yaml:ro
   healthcheck:
     # /health answers 200 whether or not a ticket is held — failing closed is a
     # designed state — so this is liveness for all three variants alike.

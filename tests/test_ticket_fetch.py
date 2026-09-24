@@ -15,7 +15,7 @@ import httpx
 import jsonschema
 import pytest
 
-from fastmcp_proxy.xrail_auth import (
+from core.xrail_auth import (
     MAX_RESPONSE_BYTES,
     NoTicketAvailable,
     TicketHolder,
@@ -595,7 +595,7 @@ def test_a_hostile_value_is_sliced_before_it_is_rendered():
     afterwards has already paid for it — so the gate has to observe whether the
     render happened, not how long its result is.
     """
-    from fastmcp_proxy import xrail_auth
+    from core import xrail_auth
 
     class Loud(str):
         rendered_whole = False
@@ -618,7 +618,7 @@ def test_a_mapping_is_described_without_every_key_being_rendered():
     all 20k keys and slicing afterwards produces the same short string, having
     already paid for it on the loop every mount shares. So the gate is whether
     the keys past the sample were rendered at all."""
-    from fastmcp_proxy import xrail_auth
+    from core import xrail_auth
 
     class Loud(str):
         rendered = 0
@@ -770,7 +770,7 @@ async def test_an_ambient_proxy_variable_cannot_redirect_the_fetch(monkeypatch):
     base image or a pod spec would turn the one destination the plaintext guard
     exempts — traffic that never leaves the machine — into a hop across the
     network carrying the credential and the ticket."""
-    from fastmcp_proxy import xrail_auth
+    from core import xrail_auth
 
     monkeypatch.setenv("ALL_PROXY", "http://127.0.0.1:9")
     seen: list[dict] = []
@@ -906,7 +906,7 @@ def test_a_container_is_summarised_rather_than_rendered():
     """The branch the `_clip` docstring calls out. A 400k-element list reaches
     it from three issuer-controlled sites, and rendering one costs milliseconds
     on the loop every mount shares."""
-    from fastmcp_proxy import xrail_auth
+    from core import xrail_auth
 
     assert xrail_auth._clip(list(range(400_000))) == "<list of 400000 items>"
     assert xrail_auth._clip({"a": 1, "b": 2}) == "<dict of 2 items>"
@@ -986,7 +986,7 @@ async def test_a_failure_message_is_truncated_before_it_is_logged():
     it into a warning, and a message the length of the response cap is a log
     line nobody can read — and one that every stacked filter on the root
     handlers then walks, which is why the bound is worth more than tidiness."""
-    from fastmcp_proxy.xrail_auth import TicketHolder
+    from core.xrail_auth import TicketHolder
 
     class _Loud(Exception):
         def __str__(self) -> str:
@@ -1047,7 +1047,7 @@ async def test_the_fetch_finds_its_roots_where_the_environment_says(
 
     import certifi
 
-    from fastmcp_proxy import xrail_auth
+    from core import xrail_auth
 
     # A bundle holding exactly one root, so the context that read the
     # environment is distinguishable from the one that did not. `SSL_CERT_FILE`
@@ -1984,7 +1984,7 @@ def test_an_upstream_password_with_no_username_is_a_credential_too():
     reading only the username lets the one-part form past."""
     from urllib.parse import urlsplit as _split
 
-    from fastmcp_proxy import proxy as proxy_module
+    from standalone import server as proxy_module
 
     parts = _split("https://:s3cret@gateway.invalid/mcp")
     assert not parts.username

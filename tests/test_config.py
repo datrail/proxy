@@ -14,8 +14,8 @@ import sys
 
 import pytest
 
-from fastmcp_proxy import proxy as proxy_module
-from fastmcp_proxy.xrail_auth import token_fingerprint
+from core.xrail_auth import token_fingerprint
+from standalone import server as proxy_module
 
 
 async def _hold(source):
@@ -840,7 +840,7 @@ async def test_an_expired_ticket_is_not_reported_as_held(monkeypatch, caplog):
     in the one log line this fetch exists to produce."""
     import httpx
 
-    from fastmcp_proxy.xrail_auth import TicketSource
+    from core.xrail_auth import TicketSource
 
     source = TicketSource(
         "https://rc.invalid",
@@ -2006,7 +2006,7 @@ def test_the_version_is_settled_before_the_upstreams_are_parsed(write_config):
 #: and the e2e stack mounts its own.
 _REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 SHIPPED_CONFIGS = (
-    _REPO_ROOT / "fastmcp_proxy" / "bridge.yaml.example",
+    _REPO_ROOT / "standalone" / "bridge.yaml.example",
     _REPO_ROOT / "e2e" / "bridge.yaml",
 )
 

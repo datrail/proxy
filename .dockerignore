@@ -5,10 +5,11 @@
 # Dockerfile says why they travel with the distribution.
 *
 !requirements.txt
-!fastmcp_proxy/
+!core/
+!standalone/
 !LICENSE
 !NOTICE
 
 # The runtime config is per deployment and mounted, never baked.
-fastmcp_proxy/bridge.yaml
+standalone/bridge.yaml
 **/__pycache__/
