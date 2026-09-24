@@ -1,9 +1,9 @@
 # The proxy, as it is deployed: one container per agent, alongside it.
 #
 # bridge.yaml is not in the image: .dockerignore keeps it out and only
-# bridge.yaml.example ships, so a container without a mounted config stops at
+# standalone/bridge.yaml.example ships, so a container without a mounted config stops at
 # startup rather than serving an upstream list nobody chose. Mount one:
-#   -v ./bridge.yaml:/app/fastmcp_proxy/bridge.yaml:ro
+#   -v ./bridge.yaml:/app/standalone/bridge.yaml:ro
 FROM python:3.12-slim
 
 WORKDIR /app
@@ -21,7 +21,8 @@ RUN useradd --no-create-home --uid 10001 railproxy
 # software, and Apache-2.0 asks that recipients get a copy.
 COPY LICENSE NOTICE ./
 
-COPY fastmcp_proxy/ ./fastmcp_proxy/
+COPY core/ ./core/
+COPY standalone/ ./standalone/
 
 # python:3.12-slim defines no non-root user. Nothing after the install step
 # needs root, and this process listens on a network for an agent it is placed
@@ -31,9 +32,9 @@ USER 10001
 
 ENV RAIL_PROXY_BIND=0.0.0.0 \
     RAIL_PROXY_PORT=8091 \
-    RAIL_PROXY_CONFIG_FILE=/app/fastmcp_proxy/bridge.yaml
+    RAIL_PROXY_CONFIG_FILE=/app/standalone/bridge.yaml
 
 # The default only. RAIL_PROXY_PORT moves the listener and this does not follow
 # it, so a run that changes the port needs an explicit -p rather than -P.
 EXPOSE 8091
-CMD ["python", "-m", "fastmcp_proxy.proxy"]
+CMD ["python", "-m", "standalone.server"]

@@ -104,7 +104,7 @@ def upstream(monkeypatch):
     as a parameter: a seam that exists only for tests is a seam that can be
     wrong in production without any test noticing.
     """
-    from fastmcp_proxy import proxy as proxy_module
+    from standalone import server as proxy_module
 
     seen: list[dict[str, Any]] = []
     handler = _upstream_handler(seen)
@@ -230,7 +230,7 @@ def wound_holder(*, ticket: str | None = None, reason: str | None = None):
     This winds the real object instead, and every read goes through the code
     under test.
     """
-    from fastmcp_proxy.xrail_auth import TicketHolder, Token
+    from core.xrail_auth import TicketHolder, Token
 
     now = 1_000_000.0
     holder = TicketHolder(_NeverAsked(), clock=lambda: now)

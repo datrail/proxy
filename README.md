@@ -8,15 +8,15 @@ calls without exposing it to the agent.
 ## Quick start
 
 Create a bridge configuration from
-[`fastmcp_proxy/bridge.yaml.example`](fastmcp_proxy/bridge.yaml.example), then
+[`standalone/bridge.yaml.example`](standalone/bridge.yaml.example), then
 run in forwarding-only mode:
 
 ```bash
 git clone https://github.com/datrail/proxy.git
 cd proxy
-cp fastmcp_proxy/bridge.yaml.example bridge.yaml
+cp standalone/bridge.yaml.example bridge.yaml
 docker run --rm -p 8091:8091 \
-  -v "$PWD/bridge.yaml:/app/fastmcp_proxy/bridge.yaml:ro" \
+  -v "$PWD/bridge.yaml:/app/standalone/bridge.yaml:ro" \
   ghcr.io/datrail/proxy:latest
 ```
 
@@ -33,6 +33,16 @@ arrive, not just that the container is healthy. [`.env.example`](.env.example) d
 environment variables. The proxy serves MCP at `POST /mcp` and liveness at `GET /health`.
 
 ## Architecture
+
+The repository has one dependency direction: the standalone host imports the
+vendor-neutral injection core. The core never imports the host or a future
+plugin. [`docs/layout.md`](docs/layout.md) records the layout decisions shared
+with DatRail Gateway.
+
+```text
+core/        ticket lifecycle and byte-for-byte x-rail injection
+standalone/  FastMCP host, process configuration, and bridge file
+```
 
 ```mermaid
 flowchart LR
