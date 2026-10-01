@@ -19,7 +19,9 @@ permissions:
 
 jobs:
   lint:
-    runs-on: ubuntu-latest
+    # Named, not ubuntu-latest: that label moves to 26.04 from 2026-10-19 to
+    # 11-19, run by run (actions/runner-images#14748). Move on purpose (DR-133).
+    runs-on: ubuntu-26.04
     steps:
       - uses: actions/checkout@v4
         with:
@@ -39,7 +41,7 @@ jobs:
       - run: make lint
 
   test:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     strategy:
       fail-fast: false
       matrix:
@@ -75,7 +77,7 @@ jobs:
   # that publishes it. container-release.yml calls this whole workflow before it
   # pushes anything, so this job runs on both paths.
   image:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     steps:
       - uses: actions/checkout@v4
         with:
@@ -98,7 +100,7 @@ jobs:
   # in-process, so nothing else here proves the container starts, binds a real
   # port, or completes a real handshake.
   e2e:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     steps:
       - uses: actions/checkout@v4
         with:
