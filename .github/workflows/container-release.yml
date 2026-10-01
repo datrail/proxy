@@ -37,7 +37,9 @@ jobs:
   # Resolved in its own job so the release can be gated on the suite: a
   # job-level `uses:` reads another job's outputs, and cannot read a step's.
   version:
-    runs-on: ubuntu-latest
+    # Named, not ubuntu-latest: that label moves to 26.04 from 2026-10-19 to
+    # 11-19, run by run (actions/runner-images#14748). Move on purpose (DR-133).
+    runs-on: ubuntu-26.04
     # Nothing here touches the repository or the registry; the workflow-level
     # grants exist for `publish`.
     permissions: {}
@@ -87,7 +89,7 @@ jobs:
 
   publish:
     needs: [version, ci]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     steps:
       - uses: actions/checkout@v4
         with:
