@@ -613,3 +613,15 @@ def test_a_rejected_setting_names_itself_and_what_it_fell_back_to(
 
     messages = [r.getMessage() for r in caplog.records]
     assert any(name in m and f"using {fallback}" in m for m in messages), messages
+
+
+def test_an_upstream_password_with_no_username_is_a_credential_too():
+    """`urlsplit("https://:s3cret@h/").username` is the empty string, so a guard
+    reading only the username lets the one-part form past."""
+    from urllib.parse import urlsplit as _split
+
+    parts = _split("https://:s3cret@gateway.invalid/mcp")
+    assert not parts.username
+    assert parts.password
+    assert bool(parts.username or parts.password)
+    assert settings._in_the_clear("http://gateway.invalid/mcp") is True
