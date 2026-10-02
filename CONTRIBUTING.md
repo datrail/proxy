@@ -8,21 +8,10 @@ Open an issue first for anything beyond an obvious fix. Anything touching which 
 
 ## Running it
 
-```
-make init   # needs uv: https://docs.astral.sh/uv/
-cp proxy-standalone/bridge.yaml.example bridge.yaml   # then edit it
-RAIL_PROXY_CONFIG_FILE=bridge.yaml uv run python -m proxy.standalone.server
-```
-
-That runs it as a plain proxy: `RAIL_PLUGIN_ENABLED` is off by default, so it
-attaches nothing and needs no Rail Center. Set it to `true`, with
-`RAIL_CENTER_URL`, `RAIL_HOST_ID` and `RAIL_SANDBOX_NAME`, to fetch and attach a
-ticket.
-
-`make test` runs the suite and `make lint` the linter; CI runs both. The proxy
-listens on `0.0.0.0:8091` by default, serving `POST /mcp` and `GET /health`.
-Every setting is an environment variable, listed in
-[bridge.yaml.example](proxy-standalone/bridge.yaml.example).
+- From source: [proxy-standalone](proxy-standalone/README.md#from-source),
+  which also covers configuration.
+- The suite, lint and e2e: [Development](README.md#development) in the README.
+  CI runs the same `make` targets.
 
 ## The rule that is not negotiable
 

@@ -8,18 +8,11 @@ whole.
 
 ## Run
 
-Forwarding-only, with a bridge file listing the upstreams:
-
-```bash
-cp proxy-standalone/bridge.yaml.example bridge.yaml   # then edit it
-docker run --rm -p 8091:8091 \
-  -v "$PWD/bridge.yaml:/app/standalone/bridge.yaml:ro" \
-  ghcr.io/datrail/proxy:latest
-```
-
-That is the whole of forwarding-only: `RAIL_PLUGIN_ENABLED` is off by default,
-so a proxy nobody has given RailXia configuration needs no variable at all. The
-image has no bridge file of its own: without one mounted it stops at startup.
+The main README's [quick start](../README.md#quick-start) runs the image
+forwarding-only, and that is the whole of it: `RAIL_PLUGIN_ENABLED` is off by
+default, so a proxy nobody has given RailXia configuration needs no variable at
+all. The image has no bridge file of its own: without one mounted it stops at
+startup.
 
 To attach an identity, set `RAIL_PLUGIN_ENABLED=true` and add
 `RAIL_CENTER_URL`, `RAIL_HOST_ID`, and `RAIL_SANDBOX_NAME` — those three beside
