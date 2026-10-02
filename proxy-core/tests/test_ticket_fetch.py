@@ -1605,7 +1605,7 @@ async def test_a_snapshot_never_carries_a_ticket_and_a_reason_together():
 
 
 def test_the_no_ticket_warning_is_not_once_per_request(caplog):
-    """Once per outage, not once per request. `XRailInjector._warned` says why
+    """Once per outage, not once per request. `TicketHeaders._warned` says why
     the sandbox must not be able to choose this process's log volume."""
     from core_support import wound_holder
 
@@ -1694,16 +1694,23 @@ def test_a_second_outage_is_warned_about_like_the_first(caplog):
     outage after the first is DEBUG only."""
     from core_support import wound_holder
 
-    injector = XRailInjector(wound_holder(reason="not-found"))
+    # One holder taken through the states a real one passes through, so the
+    # injector reading it is the one that has to notice the recovery.
+    holder = wound_holder(reason="not-found")
+    injector = XRailInjector(holder)
 
-    def once(holder):
-        injector.holder = holder
+    def once():
         next(injector.auth_flow(httpx.Request("POST", "https://gw.invalid/mcp")))
 
     with caplog.at_level("WARNING"):
-        once(wound_holder(reason="not-found"))
-        once(wound_holder(ticket="recovered"))
-        once(wound_holder(reason="not-found"))
+        once()
+        holder._no_ticket_reason = None
+        holder._ticket = Token("recovered", holder.clock() + 1800)
+        once()
+        # As a real `not-found` answer does: the ticket goes with it.
+        holder._ticket = None
+        holder._no_ticket_reason = "not-found"
+        once()
 
     warnings = [r for r in caplog.records if "no valid ticket" in r.getMessage()]
     assert len(warnings) == 2

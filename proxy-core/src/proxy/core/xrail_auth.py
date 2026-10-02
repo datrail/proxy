@@ -26,6 +26,7 @@ import logging
 import re
 import time
 from collections.abc import Callable, Mapping
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
 from urllib.parse import urlencode, urlsplit, urlunsplit
@@ -940,6 +941,117 @@ class TicketHolder:
                 await asyncio.sleep(self.MIN_REFRESH_INTERVAL_SEC)
 
 
+#: The x-rail protocol's header names. Constants, not settings: the gateway
+#: looks for exactly these. A configurable name fails silently — injection logs
+#: success, the gateway sees no `x-rail`, every call is refused, and nothing
+#: names the cause.
+#:
+#: `x-rail` carries the ticket. `x-rail-status` is where an omitted `x-rail` is
+#: explained; advisory and caller-supplied, so the gateway must never let it
+#: contribute to an allow. `x-rail-upstream` is how the Envoy interface tells
+#: Envoy which route a protected request takes; it never reaches an upstream.
+XRAIL_HEADER = "x-rail"
+XRAIL_STATUS_HEADER = "x-rail-status"
+XRAIL_UPSTREAM_HEADER = "x-rail-upstream"
+
+#: The agent's headers that may reach a protected upstream, for an interface
+#: that forwards the agent's own request rather than building one. Every other
+#: header the agent sends is removed, so the upstream sees a closed set, as it
+#: does from the standalone proxy, which forwards none of the agent's headers
+#: and sends only its HTTP client's own.
+#:
+#: Close to standalone's closed set, and not equal to it. Standalone's tests
+#: pin two sets, and both include `connection`, which is hop-by-hop and never
+#: forwarded as the agent sent it, so it is not here. `cache-control` is in
+#: only one of standalone's, and `last-event-id`, which a resumed SSE stream
+#: sends, is in neither. Reconciling the two is a change of its own; until
+#: then standalone's tests keep their sets, and only the Envoy interface reads
+#: this one.
+ALLOWED_AGENT_HEADERS = frozenset(
+    {
+        "host",
+        "accept",
+        "accept-encoding",
+        "content-length",
+        "content-type",
+        "user-agent",
+        "mcp-protocol-version",
+        "mcp-session-id",
+        "cache-control",
+        "last-event-id",
+    }
+)
+
+
+@dataclass(frozen=True)
+class OutboundHeaders:
+    """The x-rail headers to set on one outbound request.
+
+    `x-rail` with the ticket, or `x-rail-status` with the reason there is none,
+    or nothing at all where the plugin is off. Never both.
+    """
+
+    headers: Mapping[str, str] = field(default_factory=dict)
+
+
+def outbound_headers(holder: TicketHolder | None) -> OutboundHeaders:
+    """What to attach, from one `snapshot()` of `holder`. Pure; logs nothing.
+
+    `holder` is None where the plugin is off, and then nothing is attached —
+    not `x-rail`, and not `x-rail-status` either. That is a different state
+    from failing closed: pass-through says nothing about identity at all, and
+    writing a status header would claim it had tried.
+    """
+    if holder is None:
+        return OutboundHeaders()
+    ticket, reason = holder.snapshot()
+    if ticket is not None:
+        return OutboundHeaders({XRAIL_HEADER: ticket})
+    return OutboundHeaders({XRAIL_STATUS_HEADER: reason})
+
+
+class TicketHeaders:
+    """`outbound_headers` per request, and the log line that says what went out.
+
+    Each interface owns one, because it holds the one piece of state the
+    decision needs: what was last warned about.
+    """
+
+    def __init__(self, holder: TicketHolder | None) -> None:
+        self.holder = holder
+        #: The last reason warned about. One agent tool call opens a fresh
+        #: upstream session — initialize, notifications/initialized, tools/list,
+        #: tools/call — so a per-request warning lets a sandbox in a loop choose
+        #: this process's log volume during exactly the outage an operator needs
+        #: to read about. Warned on the transition, DEBUG for the rest.
+        self._warned: str | None = None
+
+    def for_request(self, destination: object) -> OutboundHeaders:
+        """The headers for a request to `destination`, which is only logged."""
+        outbound = outbound_headers(self.holder)
+        ticket = outbound.headers.get(XRAIL_HEADER)
+        reason = outbound.headers.get(XRAIL_STATUS_HEADER)
+        if ticket is not None:
+            self._warned = None
+            log.debug(
+                "outbound %s — injected %s (fingerprint=%s)",
+                destination,
+                XRAIL_HEADER,
+                token_fingerprint(ticket),
+            )
+        elif reason is not None:
+            at = log.warning if reason != self._warned else log.debug
+            self._warned = reason
+            at(
+                "outbound %s — no valid ticket: %s omitted, %s=%s",
+                destination,
+                XRAIL_HEADER,
+                XRAIL_STATUS_HEADER,
+                reason,
+            )
+        return outbound
+
+
 class XRailInjector(httpx.Auth):
     """Puts the held ticket on every outbound request.
 
@@ -956,43 +1068,15 @@ class XRailInjector(httpx.Auth):
     presence and make this component an author of ticket content.
     """
 
-    #: A protocol constant, not a setting: the gateway looks for exactly this.
-    #: A configurable name fails silently — injection logs success, the gateway
-    #: sees no `x-rail`, every call is refused, and nothing names the cause.
-    HEADER = "x-rail"
-    #: Where an omitted `x-rail` is explained. Advisory and caller-supplied, so
-    #: the gateway must never let it contribute to an allow.
-    STATUS_HEADER = "x-rail-status"
+    #: Kept on the class as well: the tests and the wire contract name them
+    #: here. `XRAIL_HEADER` and `XRAIL_STATUS_HEADER` say what they are.
+    HEADER = XRAIL_HEADER
+    STATUS_HEADER = XRAIL_STATUS_HEADER
 
     def __init__(self, holder: TicketHolder) -> None:
-        self.holder = holder
-        #: The last reason warned about. One agent tool call opens a fresh
-        #: upstream session — initialize, notifications/initialized, tools/list,
-        #: tools/call — so a per-request warning lets a sandbox in a loop choose
-        #: this process's log volume during exactly the outage an operator needs
-        #: to read about. Warned on the transition, DEBUG for the rest.
-        self._warned: str | None = None
+        self._headers = TicketHeaders(holder)
 
     def auth_flow(self, request: httpx.Request):
-        ticket, reason = self.holder.snapshot()
-        if ticket is not None:
-            request.headers[self.HEADER] = ticket
-            self._warned = None
-            log.debug(
-                "outbound %s — injected %s (fingerprint=%s)",
-                request.url,
-                self.HEADER,
-                token_fingerprint(ticket),
-            )
-        else:
-            request.headers[self.STATUS_HEADER] = reason
-            at = log.warning if reason != self._warned else log.debug
-            self._warned = reason
-            at(
-                "outbound %s — no valid ticket: %s omitted, %s=%s",
-                request.url,
-                self.HEADER,
-                self.STATUS_HEADER,
-                reason,
-            )
+        for name, value in self._headers.for_request(request.url).headers.items():
+            request.headers[name] = value
         yield request  # the httpx.Auth contract
