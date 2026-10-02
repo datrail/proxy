@@ -32,6 +32,10 @@ Released versions correspond to published images at `ghcr.io/datrail/proxy`.
   GitHub Enterprise Cloud — and a release that cannot produce one warns
   rather than failing.
 
+### Changed
+
+- **The source is a uv workspace of two packages**, `proxy-core` and `proxy-standalone` (importing as `proxy.core` and `proxy.standalone`), so a second image can install only what it runs. The image is unchanged — same name, user, port, environment and installed packages — except that its command is now `python -m proxy.standalone.server` and its Python environment lives in `/app/.venv`, first on `PATH`. The mount point for the bridge file is still `/app/standalone/bridge.yaml`. Every dependency, transitive ones included, is now pinned by `uv.lock`, and running from source needs Python 3.12.
+
 ### Removed
 
 - `RAIL_TICKET_MODE`, which `v0.1.0` shipped and its `.env.example` carried. An

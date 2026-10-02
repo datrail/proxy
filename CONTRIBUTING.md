@@ -9,9 +9,10 @@ Open an issue first for anything beyond an obvious fix. Anything touching which 
 ## Running it
 
 ```
-pip install -r requirements.txt -r requirements-test.txt -r requirements-dev.txt
-cp standalone/bridge.yaml.example standalone/bridge.yaml   # then edit it
-python -m standalone.server
+make init   # needs uv: https://docs.astral.sh/uv/
+cp proxy-standalone/src/proxy/standalone/bridge.yaml.example \
+  proxy-standalone/src/proxy/standalone/bridge.yaml   # then edit it
+uv run python -m proxy.standalone.server
 ```
 
 That runs it as a plain proxy: `RAIL_PLUGIN_ENABLED` is off by default, so it
@@ -22,7 +23,7 @@ ticket.
 `make test` runs the suite and `make lint` the linter; CI runs both. The proxy
 listens on `0.0.0.0:8091` by default, serving `POST /mcp` and `GET /health`.
 Every setting is an environment variable, listed in
-[bridge.yaml.example](standalone/bridge.yaml.example).
+[bridge.yaml.example](proxy-standalone/src/proxy/standalone/bridge.yaml.example).
 
 ## The rule that is not negotiable
 
