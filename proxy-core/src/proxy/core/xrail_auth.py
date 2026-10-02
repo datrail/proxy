@@ -203,7 +203,9 @@ def parse_expires_at(value: Any) -> float:
     treating a dead ticket as live.
     """
     if not isinstance(value, str):
-        raise ValueError(f"expires_at is not an ISO 8601 string: {_clip(value)}")
+        raise ValueError(  # noqa: TRY004 - bad data, not a bad caller
+            f"expires_at is not an ISO 8601 string: {_clip(value)}"
+        )
     if "T" not in value and "t" not in value:
         raise ValueError(f"expires_at names no time of day: {_clip(value)}")
     try:
@@ -539,7 +541,9 @@ class TicketSource:
 
         envelope = response.json()
         if not isinstance(envelope, Mapping):
-            raise ValueError("the response was not a JSON object")
+            raise ValueError(  # noqa: TRY004 - bad data, not a bad caller
+                "the response was not a JSON object"
+            )
 
         # The echo the contract requires, checked rather than discarded. It is
         # the one field that says which host the answer describes, so a
@@ -553,7 +557,7 @@ class TicketSource:
 
         tickets = envelope.get("tickets")
         if not isinstance(tickets, list):
-            raise ValueError(
+            raise ValueError(  # noqa: TRY004 - bad data, not a bad caller
                 f"the response carried no tickets list ({_describe_keys(envelope)})"
             )
         if not tickets:
@@ -572,7 +576,9 @@ class TicketSource:
 
         entry = tickets[0]
         if not isinstance(entry, Mapping):
-            raise ValueError(f"the ticket entry is not an object: {_clip(entry)}")
+            raise ValueError(  # noqa: TRY004 - bad data, not a bad caller
+                f"the ticket entry is not an object: {_clip(entry)}"
+            )
 
         # The ownership check the count alone cannot give; the class docstring
         # says why it is not optional.
@@ -766,7 +772,7 @@ class TicketHolder:
                 self.next_refresh_delay(),
             )
             return False
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - a failed refresh is never fatal
             # The issuer failed to answer, so its last authoritative answer is
             # no longer what is being reported: `not-found` means Rail Center
             # said this agent has no ticket, and it has now said nothing at all.
@@ -897,7 +903,7 @@ class TicketHolder:
             current = asyncio.current_task()
             if current is not None and getattr(current, "cancelling", int)():
                 raise
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - must not replace the shutdown
             log.error("the ticket refresh loop had already failed: %r", exc)
 
     async def _refresh_loop(self) -> None:

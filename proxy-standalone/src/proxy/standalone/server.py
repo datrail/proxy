@@ -606,7 +606,7 @@ class RedactingFilter(logging.Filter):
     def filter(self, record: logging.LogRecord) -> bool:
         try:
             self._redact_record(record)
-        except Exception:
+        except Exception:  # noqa: BLE001 - a log filter must never raise
             record.msg = "a log record could not be redacted and was withheld"
             record.args = ()
             record.exc_info = None

@@ -29,11 +29,6 @@ dev = [
 # `proxy` is a namespace package (no __init__.py in any member).
 namespace-packages = ["proxy-*/src/proxy"]
 
-[tool.ruff.lint]
-# BLE001: the three blind excepts (refresh, aclose, RedactingFilter) must never raise.
-# TRY004: every site validates another service's data, which raises ValueError here.
-ignore = ["BLE001", "TRY004"]
-
 [tool.ruff.lint.isort]
 known-first-party = ["proxy", "core_support", "standalone_support"]
 
