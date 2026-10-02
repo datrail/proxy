@@ -10,11 +10,11 @@ without one is rejected rather than stored as never expiring — with nothing el
 to read, "no expiry" would mean "valid for ever".
 
 The wire contract is pinned in `spec/ticket-fetch.schema.json`, and
-`tests/fixtures/tickets.json` is the instance the suite validates against it.
+`proxy-core/tests/fixtures/tickets.json` is the instance the suite validates against it.
 
 `redact_credentials` lives here too, because what it recognises is a credential
 inside a URL — the same thing `_parse_base` and `describe` are careful about.
-`proxy.RedactingFilter` is what installs it on every handler.
+`proxy.standalone.server.RedactingFilter` is what installs it on every handler.
 """
 
 from __future__ import annotations
@@ -207,12 +207,9 @@ def parse_expires_at(value: Any) -> float:
     if "T" not in value and "t" not in value:
         raise ValueError(f"expires_at names no time of day: {_clip(value)}")
     try:
-        # Two rewrites, both for the 3.10 floor, where `fromisoformat` reads
-        # only what `isoformat` writes. It learns the trailing-Z spelling in
-        # 3.11, and Z is what Rail Center emits — without the first, 3.10 parses
-        # no ticket at all. It accepts 3- or 6-digit fractional seconds only,
-        # while RFC 3339 allows any number of them, so the second pads or
-        # truncates to microseconds, which is all a ticket expiry needs.
+        # Z (either case) to +00:00, and fractional seconds padded or truncated
+        # to microseconds: the plainest form `fromisoformat` reads, and all a
+        # ticket expiry needs.
         stamp = value[:-1] + "+00:00" if value[-1:] in ("Z", "z") else value
         stamp = _FRACTION.sub(lambda m: f".{m.group(1)[:6]:0<6}", stamp, count=1)
         moment = datetime.fromisoformat(stamp)
@@ -896,10 +893,7 @@ class TicketHolder:
             # *this* task is somebody stopping the caller, and dropping it here
             # would let a cancelled shutdown carry on as though it were clean.
             #
-            # `Task.cancelling()` arrived in 3.11 and this project's floor is
-            # 3.10, where there is no way to tell the two apart — so on the
-            # floor the loop's cancellation is what this is assumed to be,
-            # which is the case that actually happens.
+            # `Task.cancelling()` is non-zero only when this task was cancelled.
             current = asyncio.current_task()
             if current is not None and getattr(current, "cancelling", int)():
                 raise

@@ -1073,12 +1073,7 @@ async def test_the_fetch_finds_its_roots_where_the_environment_says(
 
 
 def test_fractional_seconds_are_read_at_whatever_precision_they_arrive_in():
-    """RFC 3339 puts no limit on the digits; `fromisoformat` on the 3.10 floor
-    reads three or six and rejects the rest, which would leave a conformant
-    issuer's ticket unparseable on one leg of the matrix and fine on the other.
-
-    Its teeth are on that leg: 3.12 parses any precision, so this passes there
-    with the normalisation deleted."""
+    """RFC 3339 puts no limit on the digits, so neither may the parser."""
     assert parse_expires_at("2026-07-28T10:15:00.5Z") == 1_785_233_700.5
     assert parse_expires_at("2026-07-28T10:15:00.500000000Z") == 1_785_233_700.5
     assert parse_expires_at("2026-07-28T10:15:00.1234Z") == pytest.approx(
