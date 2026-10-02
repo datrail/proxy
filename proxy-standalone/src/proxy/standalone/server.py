@@ -31,16 +31,16 @@ from starlette.types import ASGIApp, Receive, Scope, Send
 from proxy.core.logs import configure_logging, install_redaction, log_level
 from proxy.core.settings import (
     ConfigError,
-    _naming_a_rail_center,
     build_ticket_source,
     plugin_enabled,
     refresh_seconds,
+    refuse_a_credential_in_the_url,
     seconds_setting,
+    warn_if_in_the_clear,
 )
 from proxy.core.xrail_auth import (
     TicketHolder,
     XRailInjector,
-    is_loopback,
     redact_credentials,
 )
 
@@ -272,12 +272,6 @@ def _clip(value: object, limit: int = 80) -> str:
     return text if len(text) <= limit else text[:limit] + "…"
 
 
-def _in_the_clear(url: str) -> bool:
-    """True where a request to `url` crosses a network unencrypted."""
-    parts = urlsplit(url)
-    return parts.scheme != "https" and not is_loopback(parts.hostname)
-
-
 def upstream_client(**kwargs: Any) -> httpx.AsyncClient:
     """The client every mount dials its upstream with.
 
@@ -332,44 +326,13 @@ def build_gateway(holder: TicketHolder | None) -> FastMCP:
     enabled = plugin_enabled()
 
     for srv in load_servers():
-        parts = urlsplit(srv["url"])
-        if injector is not None and (parts.username or parts.password):
-            # `username or password`, matching httpx: it derives Basic auth from
-            # either, so `https://token@host/` is as much a credential as
-            # `https://u:p@host/`. Reading only the password lets the one-part
-            # form past — which is the same mistake `TicketSource` documents on
-            # the fetch leg.
-            #
-            # Refused rather than warned, because the injector is the client's
-            # `auth` and httpx derives Basic auth only when there is none: left
-            # alone this credential is silently dropped and every call to the
-            # upstream 401s with nothing naming the cause.
-            #
-            # The advice names the whole action rather than the flag alone,
-            # and names it out of `_naming_a_rail_center()` rather than a list
-            # of its own: an injector exists only where the flag is on *and* a
-            # Rail Center is configured, so advice short of what the
-            # cross-check keys on lands an operator on
-            # `build_ticket_source`'s contradictory-intent refusal instead.
-            raise ConfigError(
-                f"upstream '{srv['name']}' carries a credential in its url, "
-                "which cannot be sent while an x-rail ticket is being attached "
-                "— remove it, or unset RAIL_PLUGIN_ENABLED and "
-                + ", ".join(_naming_a_rail_center())
-                + " to forward without a ticket"
-            )
-        if injector is not None and _in_the_clear(srv["url"]):
-            # Not a refusal: an http upstream on a private network is an
-            # ordinary deployment, and the packaged example is one. But the
-            # ticket goes out on every forwarded call, so an operator should
-            # know it is readable — the same fact `TicketSource` refuses over
-            # for a credential it is *sending*.
-            log.warning(
-                "'%s' is plaintext http — the x-rail ticket is readable by "
-                "anyone on the path to %s",
-                srv["name"],
-                srv["url"],
-            )
+        if injector is not None:
+            # A credential is refused rather than warned about, because the
+            # injector is the client's `auth` and httpx derives Basic auth only
+            # when there is none: left alone it is silently dropped and every
+            # call to the upstream 401s with nothing naming the cause.
+            refuse_a_credential_in_the_url(srv["name"], srv["url"])
+            warn_if_in_the_clear(srv["name"], srv["url"])
         transport = StreamableHttpTransport(
             url=srv["url"], auth=injector, httpx_client_factory=upstream_client
         )

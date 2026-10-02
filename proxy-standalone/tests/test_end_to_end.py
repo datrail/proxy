@@ -19,6 +19,7 @@ from fastmcp import Client
 from fastmcp.client.transports import StreamableHttpTransport
 
 from core_support import wound_holder
+from proxy.core import settings as core_settings
 from proxy.standalone import server as proxy_module
 from proxy.standalone.server import McpMethodCompat
 from standalone_support import MCP_ACCEPT, _client_kwargs
@@ -744,7 +745,9 @@ def test_a_credential_on_an_upstream_url_is_refused_while_a_ticket_is_attached(
     # refusal — and the names come from `_naming_a_rail_center()`, the
     # expression that cross-check evaluates.
     assert "unset RAIL_PLUGIN_ENABLED" in str(info.value)
-    assert all(name in str(info.value) for name in proxy_module._naming_a_rail_center())
+    assert all(
+        name in str(info.value) for name in core_settings._naming_a_rail_center()
+    )
     assert "forward without a ticket" in str(info.value)
     # Which is what "cannot drift" has to mean: unset exactly what the message
     # names and the cross-check has nothing left to stop on. A message naming a

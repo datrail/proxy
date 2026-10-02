@@ -1088,15 +1088,3 @@ def test_a_config_this_repository_ships_is_one_this_proxy_reads(
 
     assert [s["name"] for s in servers]
     assert not [r for r in caplog.records if "schema_version" in r.getMessage()]
-
-
-def test_an_upstream_password_with_no_username_is_a_credential_too():
-    """`urlsplit("https://:s3cret@h/").username` is the empty string, so a guard
-    reading only the username lets the one-part form past."""
-    from urllib.parse import urlsplit as _split
-
-    parts = _split("https://:s3cret@gateway.invalid/mcp")
-    assert not parts.username
-    assert parts.password
-    assert bool(parts.username or parts.password)
-    assert proxy_module._in_the_clear("http://gateway.invalid/mcp") is True

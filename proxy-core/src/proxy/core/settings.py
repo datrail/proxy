@@ -12,8 +12,9 @@ from __future__ import annotations
 import logging
 import math
 import os
+from urllib.parse import urlsplit
 
-from proxy.core.xrail_auth import TicketSource
+from proxy.core.xrail_auth import TicketSource, is_loopback
 
 # The name the standalone proxy has always logged under, kept so its output is
 # unchanged by the move; renaming it is a change of its own.
@@ -317,3 +318,55 @@ def ticket_timeout() -> float:
     which is how a startup delay becomes a crash loop.
     """
     return seconds_setting("RAIL_PROXY_TICKET_TIMEOUT_SECONDS", 10.0)
+
+
+def _in_the_clear(url: str) -> bool:
+    """True where a request to `url` crosses a network unencrypted."""
+    parts = urlsplit(url)
+    return parts.scheme != "https" and not is_loopback(parts.hostname)
+
+
+def refuse_a_credential_in_the_url(name: str, url: str) -> None:
+    """Refuse an upstream `url` that carries a credential of its own.
+
+    Called only while a ticket is being attached: an upstream reached with a
+    ticket is reached with that and nothing else.
+
+    `username or password`, matching httpx: it derives Basic auth from either,
+    so `https://token@host/` is as much a credential as `https://u:p@host/`.
+    Reading only the password lets the one-part form past — which is the same
+    mistake `TicketSource` documents on the fetch leg.
+
+    The advice names the whole action rather than the flag alone, and names it
+    out of `_naming_a_rail_center()` rather than a list of its own: a ticket is
+    attached only where the flag is on *and* a Rail Center is configured, so
+    advice short of what the cross-check keys on lands an operator on
+    `build_ticket_source`'s contradictory-intent refusal instead.
+    """
+    parts = urlsplit(url)
+    if parts.username or parts.password:
+        raise ConfigError(
+            f"upstream '{name}' carries a credential in its url, "
+            "which cannot be sent while an x-rail ticket is being attached "
+            "— remove it, or unset RAIL_PLUGIN_ENABLED and "
+            + ", ".join(_naming_a_rail_center())
+            + " to forward without a ticket"
+        )
+
+
+def warn_if_in_the_clear(name: str, url: str) -> None:
+    """Say so where the ticket will cross a network unencrypted to `url`.
+
+    Called only while a ticket is being attached. Not a refusal: an http
+    upstream on a private network is an ordinary deployment, and the packaged
+    example is one. But the ticket goes out on every forwarded call, so an
+    operator should know it is readable — the same fact `TicketSource` refuses
+    over for a credential it is *sending*.
+    """
+    if _in_the_clear(url):
+        log.warning(
+            "'%s' is plaintext http — the x-rail ticket is readable by "
+            "anyone on the path to %s",
+            name,
+            url,
+        )
