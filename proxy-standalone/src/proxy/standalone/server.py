@@ -28,12 +28,11 @@ from fastmcp.server import create_proxy
 from starlette.responses import JSONResponse
 from starlette.types import ASGIApp, Receive, Scope, Send
 
+from proxy.core.lifecycle import build_holder, health_payload, running
 from proxy.core.logs import configure_logging, install_redaction, log_level
 from proxy.core.settings import (
     ConfigError,
-    build_ticket_source,
     plugin_enabled,
-    refresh_seconds,
     refuse_a_credential_in_the_url,
     seconds_setting,
     warn_if_in_the_clear,
@@ -369,13 +368,7 @@ def build_gateway(holder: TicketHolder | None) -> FastMCP:
         health check that killed the process here would turn one outage into a
         crash loop. `ticket` is where the state is, for a reader that wants it.
         """
-        return JSONResponse(
-            {
-                "status": "ok",
-                "plugin_enabled": enabled,
-                "ticket": holder.status if holder is not None else None,
-            }
-        )
+        return JSONResponse(health_payload(holder, enabled))
 
     return gateway
 
@@ -466,12 +459,7 @@ async def main() -> int:
 
     configure_logging()
     try:
-        source = build_ticket_source()
-        holder = (
-            TicketHolder(source, refresh_seconds=refresh_seconds())
-            if source is not None
-            else None
-        )
+        holder = build_holder()
         app = build_app(holder)
     except ConfigError as exc:
         log.error("%s", exc)
@@ -491,58 +479,44 @@ async def main() -> int:
         log.error("RAIL_PROXY_PORT is out of range: %d", port)
         return 2
 
-    if holder is None:
-        log.info(
-            "RAIL_PLUGIN_ENABLED is off — nothing is attached to what is forwarded"
+    # Awaited, so a wrong sandbox name or a rejected credential shows up while
+    # an operator is watching. Never fatal, and the wait is bounded by
+    # RAIL_PROXY_TICKET_TIMEOUT_SECONDS — the port is not open until it returns.
+    async with running(holder):
+        # uvicorn logs the bind once it has one. Announcing it here would name an
+        # address the process may never get.
+        # uvicorn installs its own loggers, so `basicConfig` alone leaves the access
+        # log and the startup lines at INFO whatever the variable said.
+        server = uvicorn.Server(
+            uvicorn.Config(
+                app,
+                host=bind,
+                port=port,
+                log_level=log_level().lower(),
+                # `proxy_headers` defaults on, and `forwarded_allow_ips` defaults to
+                # 127.0.0.1 — which in a sidecar is the sandbox. Left alone, the
+                # agent chooses the client address and scheme in this process's own
+                # access log by sending `X-Forwarded-For`. Nothing in front of this
+                # proxy terminates TLS for it; the sandbox connects to it directly.
+                proxy_headers=False,
+                # Filtered again below: this constructor runs `dictConfig`, which
+                # creates `uvicorn` and `uvicorn.access` with fresh handlers and
+                # `propagate = False`, after `configure_logging` has walked
+                # everything that existed.
+                # No `timeout_graceful_shutdown`: uvicorn's default waits for
+                # in-flight requests indefinitely, and a bound here would be the
+                # thing that cuts them off. It would not help anyway — every MCP
+                # response is server-sent events, and sse_starlette patches
+                # uvicorn's exit handler to abort those bodies before any grace
+                # applies, so SIGTERM mid-call leaves the agent without a response
+                # whatever is set here. Nothing in this process bounds that wait:
+                # the upstream timeout governs the call this proxy makes, not the
+                # one an agent is making to it. A restart mid-call is the agent's
+                # own deadline to survive.
+            )
         )
-    else:
-        # Awaited, so a wrong sandbox name or a rejected credential shows up
-        # while an operator is watching. Never fatal, and the wait is bounded by
-        # RAIL_PROXY_TICKET_TIMEOUT_SECONDS — the port is not open until it
-        # returns.
-        await holder.start()
-
-    # uvicorn logs the bind once it has one. Announcing it here would name an
-    # address the process may never get.
-    # uvicorn installs its own loggers, so `basicConfig` alone leaves the access
-    # log and the startup lines at INFO whatever the variable said.
-    server = uvicorn.Server(
-        uvicorn.Config(
-            app,
-            host=bind,
-            port=port,
-            log_level=log_level().lower(),
-            # `proxy_headers` defaults on, and `forwarded_allow_ips` defaults to
-            # 127.0.0.1 — which in a sidecar is the sandbox. Left alone, the
-            # agent chooses the client address and scheme in this process's own
-            # access log by sending `X-Forwarded-For`. Nothing in front of this
-            # proxy terminates TLS for it; the sandbox connects to it directly.
-            proxy_headers=False,
-            # Filtered again below: this constructor runs `dictConfig`, which
-            # creates `uvicorn` and `uvicorn.access` with fresh handlers and
-            # `propagate = False`, after `configure_logging` has walked
-            # everything that existed.
-            # No `timeout_graceful_shutdown`: uvicorn's default waits for
-            # in-flight requests indefinitely, and a bound here would be the
-            # thing that cuts them off. It would not help anyway — every MCP
-            # response is server-sent events, and sse_starlette patches
-            # uvicorn's exit handler to abort those bodies before any grace
-            # applies, so SIGTERM mid-call leaves the agent without a response
-            # whatever is set here. Nothing in this process bounds that wait:
-            # the upstream timeout governs the call this proxy makes, not the
-            # one an agent is making to it. A restart mid-call is the agent's
-            # own deadline to survive.
-        )
-    )
-    install_redaction()
-    try:
+        install_redaction()
         await server.serve()
-    finally:
-        # The refresh loop outlives `serve()` otherwise, and asyncio.run then
-        # cancels it during interpreter shutdown — which surfaces as a
-        # traceback on a clean SIGTERM.
-        if holder is not None:
-            await holder.aclose()
     return 0
 
 

@@ -755,7 +755,7 @@ def test_a_credential_on_an_upstream_url_is_refused_while_a_ticket_is_attached(
     for name in [n for n in os.environ if n.startswith("RAIL_")]:
         if name in str(info.value):
             monkeypatch.delenv(name)
-    assert proxy_module.build_ticket_source() is None
+    assert core_settings.build_ticket_source() is None
 
 
 def test_a_username_only_upstream_url_is_a_credential_too(write_config, monkeypatch):
