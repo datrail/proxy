@@ -867,17 +867,26 @@ class TicketHolder:
             log.debug("ticket refreshed, unchanged")
         return True
 
-    async def start(self) -> None:
+    async def start(self, *, wait_for_first_fetch: bool = True) -> None:
         """Fetch once, then keep it fresh in the background.
 
-        The first fetch is awaited, so a wrong sandbox name or a rejected
-        credential is visible at startup rather than at the first call that
-        needed an identity. It is never fatal: the proxy comes up either way and
-        fails closed until a ticket lands.
+        By default the first fetch is awaited, so a wrong sandbox name or a
+        rejected credential is visible at startup rather than at the first call
+        that needed an identity. It is never fatal: the proxy comes up either
+        way and fails closed until a ticket lands.
+
+        `wait_for_first_fetch=False` returns at once and makes the first fetch
+        the refresh loop's first iteration, for an interface that must answer
+        before Rail Center has. Until it lands the holder is one that has never
+        had an answer, so `snapshot()` says `issuer-unreachable`, and the fetch
+        logs its outcome as it would have.
         """
         log.info("fetching this proxy's ticket from %s", self.source.describe())
-        await self.refresh_once()
-        self._task = asyncio.create_task(self._refresh_loop())
+        if wait_for_first_fetch:
+            await self.refresh_once()
+        self._task = asyncio.create_task(
+            self._refresh_loop(fetch_first=not wait_for_first_fetch)
+        )
 
     async def aclose(self) -> None:
         """Stop refreshing. Idempotent, and safe before `start`.
@@ -906,8 +915,8 @@ class TicketHolder:
         except Exception as exc:  # noqa: BLE001 - must not replace the shutdown
             log.error("the ticket refresh loop had already failed: %r", exc)
 
-    async def _refresh_loop(self) -> None:
-        """Refresh until cancelled.
+    async def _refresh_loop(self, *, fetch_first: bool = False) -> None:
+        """Refresh until cancelled, without waiting first if `fetch_first`.
 
         The body is guarded because nothing supervises this task. An exception
         escaping it ends refreshing for the life of the process — silently,
@@ -916,7 +925,10 @@ class TicketHolder:
         """
         while True:
             try:
-                await asyncio.sleep(self.next_refresh_delay())
+                if fetch_first:
+                    fetch_first = False
+                else:
+                    await asyncio.sleep(self.next_refresh_delay())
                 await self.refresh_once()
             except asyncio.CancelledError:
                 raise
