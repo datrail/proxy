@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+from dataclasses import dataclass, field
+
 from proxy.core.xrail_auth import TicketHolder, Token
 
 #: Every variable the proxy reads, cleared by each member's autouse
@@ -70,3 +73,110 @@ def wound_holder(*, ticket: str | None = None, reason: str | None = None):
     elif reason not in (None, "issuer-unreachable"):
         raise AssertionError(f"no way to reach {reason!r} through the real object")
     return holder
+
+
+#: Everything standalone's HTTP client itself puts on a forwarded tool call.
+#: The identity headers are added per case, so a new name appearing on either
+#: path fails rather than passing unnoticed. Standalone's own set: the Envoy
+#: interface's is `ALLOWED_AGENT_HEADERS`, and reconciling the two is a change
+#: of its own.
+EXPECTED_OUTBOUND = frozenset(
+    {
+        "host",
+        "accept",
+        "accept-encoding",
+        "connection",
+        "user-agent",
+        "content-length",
+        "content-type",
+        "mcp-protocol-version",
+        "mcp-session-id",
+    }
+)
+
+#: What a sandbox would send to pass itself off as identified, or to carry a
+#: credential of its own upstream. None of it may cross.
+FORGED = {
+    "x-rail": "forged-by-the-sandbox",
+    "x-rail-status": "forged",
+    "authorization": "Bearer agent-secret",
+}
+
+
+@dataclass(frozen=True)
+class XRailCase:
+    """One row of the x-rail contract: a holder state, what the agent sent, and
+    what the upstream must see as a result.
+
+    Standalone's behaviour is the definition, so its tests run every row.
+    """
+
+    name: str
+    plugin: bool
+    ticket: str | None = None
+    reason: str | None = None
+    agent_headers: Mapping[str, str] = field(default_factory=dict)
+    #: Headers the upstream must see, with exactly these values.
+    expected: Mapping[str, str] = field(default_factory=dict)
+    #: Headers the upstream must not see at all.
+    absent: frozenset[str] = frozenset()
+
+    def holder(self) -> TicketHolder | None:
+        """The holder this row is about: None where the plugin is off."""
+        if not self.plugin:
+            return None
+        return wound_holder(ticket=self.ticket, reason=self.reason)
+
+
+def _with_forged(case: XRailCase) -> XRailCase:
+    """The same row with the agent forging every header it should not control.
+
+    The expectations are the row's own, so a forged `x-rail` is overwritten by
+    the real ticket or removed, never passed on, and `authorization` is absent.
+    """
+    return XRailCase(
+        name=f"{case.name}, forged",
+        plugin=case.plugin,
+        ticket=case.ticket,
+        reason=case.reason,
+        agent_headers=FORGED,
+        expected=case.expected,
+        absent=case.absent | {"authorization"},
+    )
+
+
+_BASE_CASES = [
+    # The feature: the sandbox never holds the credential identifying it, and
+    # the upstream sees an identity the agent could not have supplied.
+    XRailCase(
+        name="ticket",
+        plugin=True,
+        ticket="rc_ticket_opaque",
+        expected={"x-rail": "rc_ticket_opaque"},
+        absent=frozenset({"x-rail-status"}),
+    ),
+    # Fail closed: the request still goes out, without an identity and saying
+    # why. Refusing to forward would make an issuer outage an agent outage;
+    # sending the reason in `x-rail` itself would turn absence into presence.
+    *[
+        XRailCase(
+            name=reason,
+            plugin=True,
+            reason=reason,
+            expected={"x-rail-status": reason},
+            absent=frozenset({"x-rail"}),
+        )
+        for reason in ("not-found", "expired", "issuer-unreachable")
+    ],
+    # The plugin off. Not the fail-closed path: no status header either,
+    # because nothing was attempted.
+    XRailCase(
+        name="pass-through",
+        plugin=False,
+        absent=frozenset({"x-rail", "x-rail-status"}),
+    ),
+]
+
+#: Every row, and the agent forging its headers through a proxy that attaches
+#: nothing.
+XRAIL_CASES = [*_BASE_CASES, _with_forged(_BASE_CASES[-1])]
