@@ -1,19 +1,25 @@
-.PHONY: lint test e2e
+.PHONY: init fmt lint test e2e
 
-# The gate is defined here rather than in .github/workflows/ci.yml, so the command
-# CI runs is the one you can run before opening a pull request. Note that ruff
-# honours git's global excludes file, which a runner does not have: a path you
-# exclude globally is linted in CI and skipped locally.
+# CI runs these same targets.
+
+# Every member, editable, plus the pinned dev tools. Run once, and after pulling.
+init:
+	uv sync
+
+# Format, and fix what ruff can.
+fmt:
+	uv run ruff format .
+	uv run ruff check --fix .
+
+# Check only. Ruff honours git's global excludes, which CI does not have.
 lint:
-	ruff check .
-	ruff format --check .
+	uv run ruff check .
+	uv run ruff format --check .
 
 test:
-	python -m pytest -q
+	uv run pytest -q
 
-# The stack in e2e/: the image, a stubbed control plane and a stubbed upstream,
-# asserting what reached the wire. Builds the image, so it is slower than `test`
-# and answers a different question — whether the container runs at all.
+# The image, a stubbed control plane and a stubbed upstream; asserts what reached the wire.
 e2e:
 	docker compose -f e2e/compose.yml up --build \
 		--abort-on-container-exit --exit-code-from driver

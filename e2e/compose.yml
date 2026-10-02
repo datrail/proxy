@@ -12,7 +12,7 @@ name: datrail-proxy-e2e
 x-proxy: &proxy
   build:
     context: ..
-    dockerfile: Dockerfile
+    dockerfile: proxy-standalone/Dockerfile
   volumes:
     - ./bridge.yaml:/app/standalone/bridge.yaml:ro
   healthcheck:
