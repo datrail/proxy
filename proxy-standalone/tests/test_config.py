@@ -13,6 +13,7 @@ import re
 
 import pytest
 
+from proxy.core import lifecycle as core_lifecycle
 from proxy.core import logs as core_logs
 from proxy.core import settings as core_settings
 from proxy.standalone import server as proxy_module
@@ -888,14 +889,14 @@ async def test_the_refresh_interval_reaches_the_holder(config, upstream, monkeyp
             return None
 
     monkeypatch.setattr("uvicorn.Server", _Server)
-    real_holder = proxy_module.TicketHolder
+    real_holder = core_lifecycle.TicketHolder
 
     def capture(*a, **k):
         holder = real_holder(*a, **k)
         held.append(holder)
         return holder
 
-    monkeypatch.setattr(proxy_module, "TicketHolder", capture)
+    monkeypatch.setattr(core_lifecycle, "TicketHolder", capture)
 
     assert await proxy_module.main() == 0
     assert built, "the stubbed source was never built; the fetch went elsewhere"
@@ -932,9 +933,9 @@ async def test_the_refresh_loop_does_not_outlive_the_server(
         ),
     )
     held: list = []
-    real_holder = proxy_module.TicketHolder
+    real_holder = core_lifecycle.TicketHolder
     monkeypatch.setattr(
-        proxy_module,
+        core_lifecycle,
         "TicketHolder",
         lambda *a, **k: held.append(real_holder(*a, **k)) or held[-1],
     )
