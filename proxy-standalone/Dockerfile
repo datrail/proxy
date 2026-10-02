@@ -1,6 +1,5 @@
 # Build from the repo root: docker build -f proxy-standalone/Dockerfile .
 # What is sent to the build is limited by Dockerfile.dockerignore, next to this file.
-# bridge.yaml is not in the image; mount one: -v ./bridge.yaml:/app/standalone/bridge.yaml:ro
 FROM python:3.12-slim AS builder
 # Pinned by digest: uv is part of the build, like the lockfile it reads.
 COPY --from=ghcr.io/astral-sh/uv:0.12.21@sha256:a7aed3216253ee804de3e2d8afa5073baa1a177335345d43845cd4165e43b711 /uv /bin/uv
@@ -36,6 +35,7 @@ ENV PATH="/app/.venv/bin:$PATH"
 RUN useradd --no-create-home --uid 10001 railproxy
 USER 10001
 
+# bridge.yaml is not in the image; mount one: -v ./bridge.yaml:/app/standalone/bridge.yaml:ro
 ENV RAIL_PROXY_BIND=0.0.0.0 \
     RAIL_PROXY_PORT=8091 \
     RAIL_PROXY_CONFIG_FILE=/app/standalone/bridge.yaml
