@@ -1,0 +1,26 @@
+[project]
+name = "proxy-standalone"
+version = "0"  # never published; the image is versioned by its git tag
+description = "DatRail Proxy's standalone FastMCP host."
+requires-python = ">=3.12"
+# Packages imported directly are listed, even those fastmcp already brings.
+dependencies = [
+    "proxy-core",
+    "fastmcp==3.4.6",
+    # [standard] brings uvloop and httptools: the event loop and HTTP parser the image runs.
+    "uvicorn[standard]==0.52.1",
+    "starlette==1.4.1",
+    "httpx==0.28.1",
+    # Same version as DatRail Gateway: both parse the same routes file.
+    "pyyaml==6.0.1",
+]
+
+[tool.uv.sources]
+proxy-core = { workspace = true }
+
+[build-system]
+requires = ["uv_build==0.12.21"]
+build-backend = "uv_build"
+
+[tool.uv.build-backend]
+module-name = "proxy.standalone"

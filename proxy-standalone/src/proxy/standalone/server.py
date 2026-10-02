@@ -31,7 +31,7 @@ from fastmcp.server import create_proxy
 from starlette.responses import JSONResponse
 from starlette.types import ASGIApp, Receive, Scope, Send
 
-from core.xrail_auth import (
+from proxy.core.xrail_auth import (
     TicketHolder,
     TicketSource,
     XRailInjector,

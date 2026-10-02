@@ -1,0 +1,46 @@
+# Workspace root, not a package. Depends on every member so `uv sync` installs them all.
+[project]
+name = "datrail-proxy"
+version = "0"
+requires-python = ">=3.12"
+dependencies = ["proxy-core", "proxy-standalone"]
+
+[tool.uv.workspace]
+members = ["proxy-*"]
+
+[tool.uv.sources]
+proxy-core = { workspace = true }
+proxy-standalone = { workspace = true }
+
+# Dev tools; never in an image (Dockerfiles sync with `--no-dev`).
+[dependency-groups]
+dev = [
+    "ruff==0.16.1",
+    "pytest==9.1.1",
+    "pytest-asyncio==1.4.0",
+    # Imported by the suite, for a one-root CA bundle; also arrives through httpx.
+    "certifi==2026.7.22",
+    # [format] makes `date-time` an assertion: the expires_at checks depend on it.
+    "jsonschema[format]==4.26.0",
+]
+
+# Stock ruff rules; the target version comes from `requires-python`.
+[tool.ruff]
+# `proxy` is a namespace package (no __init__.py in any member).
+namespace-packages = ["proxy-*/src/proxy"]
+
+[tool.ruff.lint]
+# BLE001: the three blind excepts (refresh, aclose, RedactingFilter) must never raise.
+# TRY004: every site validates another service's data, which raises ValueError here.
+ignore = ["BLE001", "TRY004"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["proxy", "core_support", "standalone_support"]
+
+[tool.pytest.ini_options]
+testpaths = ["proxy-*"]
+# Several members have a tests/ folder, so tests are imported by path.
+addopts = "--import-mode=importlib"
+# So tests can import the *_support.py helpers, which importlib mode otherwise prevents.
+pythonpath = ["proxy-core/tests", "proxy-standalone/tests"]
+asyncio_mode = "strict"

@@ -26,7 +26,7 @@ import logging
 import re
 import time
 from collections.abc import Callable, Mapping
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 from urllib.parse import urlencode, urlsplit, urlunsplit
 
@@ -219,7 +219,7 @@ def parse_expires_at(value: Any) -> float:
     except ValueError:
         raise ValueError(f"expires_at is not parseable: {_clip(value)}") from None
     if moment.tzinfo is None:
-        moment = moment.replace(tzinfo=timezone.utc)
+        moment = moment.replace(tzinfo=UTC)
     return moment.timestamp()
 
 
