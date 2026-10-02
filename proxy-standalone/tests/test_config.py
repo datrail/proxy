@@ -43,7 +43,7 @@ def test_a_missing_config_file_is_reported_by_path(write_config, monkeypatch, tm
 @pytest.mark.parametrize(
     "value", ["", "   ", "\t\n"], ids=["empty", "spaces", "whitespace"]
 )
-def test_a_blank_config_path_falls_back_to_the_packaged_default(monkeypatch, value):
+def test_a_blank_config_path_falls_back_to_the_default(monkeypatch, value):
     """An unset compose interpolation yields an empty string, and `Path("")` is
     the current directory — which exists, so a naive check passes and the read
     fails on a directory instead of reporting a missing config. Whitespace is
@@ -52,9 +52,8 @@ def test_a_blank_config_path_falls_back_to_the_packaged_default(monkeypatch, val
 
     # Compared against the path itself rather than against the constant the
     # function returns, which would hold however the constant was defined.
-    assert proxy_module.config_file() == (
-        pathlib.Path(proxy_module.__file__).parent / "bridge.yaml"
-    )
+    # Relative, so the image's WORKDIR makes it /app/standalone/bridge.yaml.
+    assert proxy_module.config_file() == pathlib.Path("standalone/bridge.yaml")
 
 
 def test_a_config_that_is_not_utf_8_is_reported_rather_than_raised(
@@ -2008,7 +2007,7 @@ def test_the_version_is_settled_before_the_upstreams_are_parsed(write_config):
 #: and the e2e stack mounts its own.
 _REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
 SHIPPED_CONFIGS = (
-    _REPO_ROOT / "proxy-standalone/src/proxy/standalone/bridge.yaml.example",
+    _REPO_ROOT / "proxy-standalone/bridge.yaml.example",
     _REPO_ROOT / "e2e" / "bridge.yaml",
 )
 

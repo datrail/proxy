@@ -39,7 +39,8 @@ from proxy.core.xrail_auth import (
     redact_credentials,
 )
 
-DEFAULT_CONFIG_FILE = Path(__file__).resolve().parent / "bridge.yaml"
+# Relative to the working directory: /app/standalone/bridge.yaml in the image.
+DEFAULT_CONFIG_FILE = Path("standalone/bridge.yaml")
 _LOG_FORMAT = "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
 log = logging.getLogger("fastmcp_proxy")
 

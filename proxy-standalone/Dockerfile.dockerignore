@@ -9,7 +9,6 @@
 !proxy-core/pyproject.toml
 !proxy-core/src/**
 !proxy-standalone/pyproject.toml
+!proxy-standalone/bridge.yaml.example
 !proxy-standalone/src/**
 **/__pycache__
-# The runtime config is per deployment and mounted, never baked.
-proxy-standalone/src/proxy/standalone/bridge.yaml

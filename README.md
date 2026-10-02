@@ -12,7 +12,7 @@ Run it in forwarding-only mode, with the example bridge configuration:
 ```bash
 git clone https://github.com/datrail/proxy.git
 cd proxy
-cp proxy-standalone/src/proxy/standalone/bridge.yaml.example bridge.yaml
+cp proxy-standalone/bridge.yaml.example bridge.yaml
 docker run --rm -p 8091:8091 \
   -v "$PWD/bridge.yaml:/app/standalone/bridge.yaml:ro" \
   ghcr.io/datrail/proxy:latest

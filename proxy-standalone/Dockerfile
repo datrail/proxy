@@ -27,6 +27,8 @@ WORKDIR /app
 
 # Apache-2.0 asks that recipients get a copy of the licence.
 COPY LICENSE NOTICE ./
+# The example only; the real bridge.yaml is mounted beside it.
+COPY proxy-standalone/bridge.yaml.example standalone/
 COPY --from=builder /app/.venv /app/.venv
 ENV PATH="/app/.venv/bin:$PATH"
 

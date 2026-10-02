@@ -11,7 +11,7 @@ whole.
 Forwarding-only, with a bridge file listing the upstreams:
 
 ```bash
-cp proxy-standalone/src/proxy/standalone/bridge.yaml.example bridge.yaml   # then edit it
+cp proxy-standalone/bridge.yaml.example bridge.yaml   # then edit it
 docker run --rm -p 8091:8091 \
   -v "$PWD/bridge.yaml:/app/standalone/bridge.yaml:ro" \
   ghcr.io/datrail/proxy:latest
@@ -31,12 +31,12 @@ arrive, not just that the container is healthy.
 
 ## Configuration
 
-- [`bridge.yaml.example`](src/proxy/standalone/bridge.yaml.example): the
+- [`bridge.yaml.example`](bridge.yaml.example): the
   upstream list, the one thing an environment variable cannot express. Each
   upstream's tools are re-exposed as `<name>_<tool>`.
 - [`.env.example`](../.env.example) lists every environment variable, and the
-  bridge example describes each with its default. `RAIL_PROXY_CONFIG_FILE` names the bridge file; the image sets it to
-  `/app/standalone/bridge.yaml`.
+  bridge example describes each with its default. `RAIL_PROXY_CONFIG_FILE`
+  names the bridge file; the image reads `/app/standalone/bridge.yaml`.
 
 The proxy listens on `0.0.0.0:8091` by default (`RAIL_PROXY_BIND`,
 `RAIL_PROXY_PORT`), and serves:
@@ -50,7 +50,6 @@ The proxy listens on `0.0.0.0:8091` by default (`RAIL_PROXY_BIND`,
 
 ```bash
 make init
-cp proxy-standalone/src/proxy/standalone/bridge.yaml.example \
-  proxy-standalone/src/proxy/standalone/bridge.yaml   # then edit it; git ignores it
-uv run python -m proxy.standalone.server
+cp proxy-standalone/bridge.yaml.example bridge.yaml   # then edit it
+RAIL_PROXY_CONFIG_FILE=bridge.yaml uv run python -m proxy.standalone.server
 ```
