@@ -615,13 +615,70 @@ def test_a_rejected_setting_names_itself_and_what_it_fell_back_to(
     assert any(name in m and f"using {fallback}" in m for m in messages), messages
 
 
-def test_an_upstream_password_with_no_username_is_a_credential_too():
-    """`urlsplit("https://:s3cret@h/").username` is the empty string, so a guard
-    reading only the username lets the one-part form past."""
-    from urllib.parse import urlsplit as _split
+def _attaching(monkeypatch):
+    """A proxy configured to attach, which is when the url checks run."""
+    monkeypatch.setenv("RAIL_PLUGIN_ENABLED", "true")
+    monkeypatch.setenv("RAIL_CENTER_URL", "https://rc.invalid")
+    monkeypatch.setenv("RAIL_HOST_ID", "h")
+    monkeypatch.setenv("RAIL_SANDBOX_NAME", "s")
 
-    parts = _split("https://:s3cret@gateway.invalid/mcp")
-    assert not parts.username
-    assert parts.password
-    assert bool(parts.username or parts.password)
-    assert settings._in_the_clear("http://gateway.invalid/mcp") is True
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://u:p@gateway.invalid/mcp",
+        "https://token@gateway.invalid/mcp",
+        "https://:s3cret@gateway.invalid/mcp",
+    ],
+    ids=["both", "username-only", "password-only"],
+)
+def test_an_upstream_url_carrying_a_credential_is_refused(monkeypatch, url):
+    """Either part is a credential: httpx derives Basic auth from either, and
+    `urlsplit("https://:s3cret@h/").username` is the empty string, so a guard
+    reading one part lets the other form past."""
+    _attaching(monkeypatch)
+
+    with pytest.raises(settings.ConfigError, match="carries a credential") as info:
+        settings.refuse_a_credential_in_the_url("delivery", url)
+
+    message = str(info.value)
+    assert "upstream 'delivery'" in message
+    # The advice is the whole action, so following it does not land on the
+    # contradictory-intent refusal.
+    for name in ("RAIL_CENTER_URL", "RAIL_HOST_ID", "RAIL_SANDBOX_NAME"):
+        assert name in message
+
+
+def test_an_upstream_url_without_a_credential_is_accepted(monkeypatch):
+    _attaching(monkeypatch)
+
+    settings.refuse_a_credential_in_the_url("delivery", "https://gateway.invalid/mcp")
+
+
+@pytest.mark.parametrize(
+    ("url", "warns"),
+    [
+        ("http://gateway.invalid/mcp", True),
+        ("https://gateway.invalid/mcp", False),
+        ("http://127.0.0.1:8080/mcp", False),
+        ("http://localhost:8080/mcp", False),
+    ],
+    ids=["plaintext", "https", "loopback-ip", "loopback-name"],
+)
+def test_a_plaintext_upstream_is_warned_about_by_name_and_url(caplog, url, warns):
+    """Not refused: an http upstream on a private network is ordinary. Loopback
+    never leaves the host, so it is not worth a warning."""
+    with caplog.at_level("WARNING"):
+        settings.warn_if_in_the_clear("delivery", url)
+
+    lines = [
+        r.getMessage() for r in caplog.records if "plaintext http" in r.getMessage()
+    ]
+    assert bool(lines) is warns
+    if warns:
+        assert lines == [
+            (
+                "'delivery' is plaintext http — the x-rail ticket is readable by "
+                f"anyone on the path to {url}"
+            )
+        ]
