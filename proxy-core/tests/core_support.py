@@ -5,6 +5,8 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 
+import pytest
+
 from proxy.core.xrail_auth import TicketHolder, Token
 
 #: Every variable the proxy reads, cleared by each member's autouse
@@ -108,7 +110,9 @@ class XRailCase:
     """One row of the x-rail contract: a holder state, what the agent sent, and
     what the upstream must see as a result.
 
-    Standalone's behaviour is the definition, so its tests run every row.
+    Standalone's behaviour is the definition, so its tests run every row. An
+    interface a row does not apply to names it in `not_for` with the reason,
+    which `xrail_params` turns into a visible skip rather than a silent one.
     """
 
     name: str
@@ -120,6 +124,7 @@ class XRailCase:
     expected: Mapping[str, str] = field(default_factory=dict)
     #: Headers the upstream must not see at all.
     absent: frozenset[str] = frozenset()
+    not_for: Mapping[str, str] = field(default_factory=dict)
 
     def holder(self) -> TicketHolder | None:
         """The holder this row is about: None where the plugin is off."""
@@ -142,6 +147,7 @@ def _with_forged(case: XRailCase) -> XRailCase:
         agent_headers=FORGED,
         expected=case.expected,
         absent=case.absent | {"authorization"},
+        not_for=case.not_for,
     )
 
 
@@ -177,6 +183,22 @@ _BASE_CASES = [
     ),
 ]
 
-#: Every row, and the agent forging its headers through a proxy that attaches
-#: nothing.
-XRAIL_CASES = [*_BASE_CASES, _with_forged(_BASE_CASES[-1])]
+#: Every row, plain and with forged agent headers.
+XRAIL_CASES = [*_BASE_CASES, *(_with_forged(case) for case in _BASE_CASES)]
+
+
+def xrail_params(interface: str) -> list:
+    """`XRAIL_CASES` as pytest params for `interface`, ids by row name. A row
+    that does not apply is skipped with the table's own reason."""
+    return [
+        pytest.param(
+            case,
+            id=case.name,
+            marks=(
+                [pytest.mark.skip(reason=case.not_for[interface])]
+                if interface in case.not_for
+                else []
+            ),
+        )
+        for case in XRAIL_CASES
+    ]

@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import pytest
 
-from core_support import wound_holder
+from core_support import wound_holder, xrail_params
 from proxy.core.xrail_auth import (
     ALLOWED_AGENT_HEADERS,
     XRAIL_HEADER,
@@ -87,3 +87,14 @@ def test_the_allowlist_lets_no_credential_or_rail_header_through():
     )
     assert not [n for n in ALLOWED_AGENT_HEADERS if n.startswith("x-rail")]
     assert not [n for n in ALLOWED_AGENT_HEADERS if n.startswith(":")]
+
+
+@pytest.mark.parametrize("case", xrail_params("core"))
+def test_the_decision_matches_every_row_of_the_contract(case):
+    """The decision alone, before any interface applies it. The agent's own
+    headers are the interface's to remove, so a forged row decides exactly what
+    its plain row does."""
+    decided = dict(outbound_headers(case.holder()).headers)
+
+    assert decided == dict(case.expected)
+    assert not set(decided) & case.absent
