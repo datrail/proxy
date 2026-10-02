@@ -18,7 +18,8 @@ import pytest
 from fastmcp import Client
 from fastmcp.client.transports import StreamableHttpTransport
 
-from core_support import wound_holder
+from core_support import EXPECTED_OUTBOUND, XRAIL_CASES, wound_holder
+from proxy.core import settings as core_settings
 from proxy.standalone import server as proxy_module
 from proxy.standalone.server import McpMethodCompat
 from standalone_support import MCP_ACCEPT, _client_kwargs
@@ -112,56 +113,6 @@ async def test_every_configured_upstream_is_mounted(write_config, upstream):
     # The suffix is the host each mount dialled, so this pins mount to url:
     # a hardcoded address, or two upstreams swapped, gives different names.
     assert tools == ["billing_two", "delivery_one"]
-
-
-@pytest.mark.asyncio
-async def test_the_agents_own_headers_do_not_reach_the_upstream(config, upstream):
-    """The proxy is the identity boundary, and this is the case that makes it
-    one. `create_proxy` turns on incoming-header forwarding, so without the
-    switch being turned back off an agent sets `x-rail` itself and the upstream
-    receives it unchanged — an identity supplied by the caller it identifies.
-    `authorization` is forwarded by the same path."""
-    forged = {
-        "x-rail": "forged-by-the-sandbox",
-        "x-rail-status": "forged",
-        "authorization": "Bearer agent-secret",
-    }
-    arrived: list[dict[str, str]] = []
-
-    async with running_proxy() as app:
-
-        async def recording(scope, receive, send):
-            if scope["type"] == "http":
-                arrived.append({k.decode(): v.decode() for k, v in scope["headers"]})
-            await app(scope, receive, send)
-
-        def factory(**kwargs):
-            return httpx.AsyncClient(
-                transport=httpx.ASGITransport(app=recording),
-                base_url="http://proxy.test",
-                **_client_kwargs(kwargs),
-            )
-
-        client = Client(
-            StreamableHttpTransport(
-                url="http://proxy.test/mcp/",
-                headers=forged,
-                httpx_client_factory=factory,
-            )
-        )
-        async with client:
-            await client.call_tool("delivery_upstream", {"text": "hello"})
-
-    for name in forged:
-        assert {hit["headers"].get(name) for hit in upstream} == {None}, name
-
-    # A positive control. Every assertion above is an absence, and an absence
-    # holds just as well if the forged headers never left the test's own
-    # client — the boundary and the harness that exercises it would go green
-    # together. This says they reached the proxy and stopped there.
-    assert arrived, "no request reached the proxy"
-    for name, value in forged.items():
-        assert {hit.get(name) for hit in arrived} == {value}, name
 
 
 @pytest.mark.asyncio
@@ -406,83 +357,79 @@ async def test_the_upstream_timeout_reaches_the_client(config, upstream, monkeyp
 # ─────────────────────────────────────────────────────────────────────
 
 
-#: Everything the transport itself puts on a forwarded request. The identity
-#: headers are added per test, so a new name appearing on either path fails
-#: rather than passing unnoticed.
-_EXPECTED_OUTBOUND = {
-    "host",
-    "accept",
-    "accept-encoding",
-    "connection",
-    "user-agent",
-    "content-length",
-    "content-type",
-    "mcp-protocol-version",
-    "mcp-session-id",
-}
+async def _forward_one_call(holder, agent_headers=None) -> list[dict[str, str]]:
+    """Make one tool call through the proxy, as an agent sending
+    `agent_headers`, and return the headers each request reached the proxy with.
 
+    What the upstream saw is in the `upstream` fixture's record.
+    """
+    arrived: list[dict[str, str]] = []
 
-async def _forward_one_call(holder):
-    """Make one tool call through the proxy and return what the upstream saw."""
-    async with running_proxy(holder) as app, agent_client(app) as client:
-        await client.call_tool("delivery_upstream", {"text": "hi"})
+    async with running_proxy(holder) as app:
+
+        async def recording(scope, receive, send):
+            if scope["type"] == "http":
+                arrived.append({k.decode(): v.decode() for k, v in scope["headers"]})
+            await app(scope, receive, send)
+
+        def factory(**kwargs):
+            return httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=recording),
+                base_url="http://proxy.test",
+                **_client_kwargs(kwargs),
+            )
+
+        client = Client(
+            StreamableHttpTransport(
+                url="http://proxy.test/mcp/",
+                headers=dict(agent_headers or {}),
+                httpx_client_factory=factory,
+            )
+        )
+        async with client:
+            await client.call_tool("delivery_upstream", {"text": "hi"})
+    return arrived
 
 
 @pytest.mark.asyncio
-async def test_a_held_ticket_is_attached_to_what_is_forwarded(config, upstream):
-    """The feature: the sandbox never holds the credential identifying it, and
-    the upstream sees an identity the agent could not have supplied."""
-    await _forward_one_call(wound_holder(ticket="rc_ticket_opaque"))
+@pytest.mark.parametrize("case", XRAIL_CASES, ids=lambda case: case.name)
+async def test_what_reaches_the_upstream_is_the_x_rail_contract(config, upstream, case):
+    """Each row of the shared table, on the wire. The table is lifted from what
+    this proxy does, so this is the reference every other interface is held to.
 
+    The proxy is the identity boundary. `create_proxy` turns on incoming-header
+    forwarding, so without the switch being turned back off an agent sets
+    `x-rail` itself and the upstream receives it unchanged — an identity
+    supplied by the caller it identifies. `authorization` is forwarded by the
+    same path. The forged row is that case.
+    """
+    arrived = await _forward_one_call(case.holder(), case.agent_headers)
+
+    # Every request, the handshake included: `initialize` and `tools/list`
+    # reach the same gateway as `tools/call`.
+    assert upstream, "nothing reached the upstream"
+    for name, value in case.expected.items():
+        assert {hit["headers"].get(name) for hit in upstream} == {value}, name
+    for name in case.absent:
+        assert {hit["headers"].get(name) for hit in upstream} == {None}, name
+
+    # The whole header set on the call, not just the names this row is about.
+    # A proxy that started sending a fingerprint, or anything else derived from
+    # the ticket, would otherwise be invisible on the one path that carries it.
     calls = [c for c in upstream if c["method"] == "tools/call"]
-    assert calls, "nothing reached the upstream"
-    assert all(c["x-rail"] == "rc_ticket_opaque" for c in calls)
-    assert all(c["x-rail-status"] is None for c in calls)
-
-    # The whole header set, not just the two this test is named for. A proxy
-    # that started sending a fingerprint, or anything else derived from the
-    # ticket, would otherwise be invisible on the one path that carries it.
+    assert calls, "no tool call reached the upstream"
     for call in calls:
-        assert set(call["headers"]) <= _EXPECTED_OUTBOUND | {"x-rail"}, sorted(
-            call["headers"]
+        assert set(call["headers"]) <= EXPECTED_OUTBOUND | set(case.expected), sorted(
+            set(call["headers"]) - EXPECTED_OUTBOUND - set(case.expected)
         )
 
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
-    "reason", ["not-found", "expired", "issuer-unreachable"], ids=str
-)
-async def test_no_valid_ticket_fails_closed_with_the_reason(config, upstream, reason):
-    """The request still goes out, without an identity and saying why. Refusing
-    to forward would make an issuer outage an agent outage; sending the reason
-    in `x-rail` itself would turn absence into presence and make this component
-    an author of ticket content."""
-    await _forward_one_call(wound_holder(reason=reason))
-
-    calls = [c for c in upstream if c["method"] == "tools/call"]
-    assert calls, "nothing reached the upstream"
-    assert all(c["x-rail"] is None for c in calls)
-    assert all(c["x-rail-status"] == reason for c in calls)
-
-    # The whole set on this path too. An outage is the state an operator can
-    # least observe, so anything the holder started leaking here would be the
-    # hardest to notice.
-    for call in calls:
-        assert set(call["headers"]) <= _EXPECTED_OUTBOUND | {"x-rail-status"}, sorted(
-            call["headers"]
-        )
-
-
-@pytest.mark.asyncio
-async def test_pass_through_attaches_neither_header(config, upstream):
-    """The plugin off. Not the fail-closed path — no status header
-    either, because nothing was attempted."""
-    await _forward_one_call(None)
-
-    calls = [c for c in upstream if c["method"] == "tools/call"]
-    assert calls, "nothing reached the upstream"
-    assert all(c["x-rail"] is None for c in calls)
-    assert all(c["x-rail-status"] is None for c in calls)
+    # A positive control. The forged assertions are absences, and an absence
+    # holds just as well if the forged headers never left the test's own
+    # client — the boundary and the harness that exercises it would go green
+    # together. This says they reached the proxy and stopped there.
+    assert arrived, "no request reached the proxy"
+    for name, value in case.agent_headers.items():
+        assert {hit.get(name) for hit in arrived} == {value}, name
 
 
 @pytest.mark.asyncio
@@ -744,7 +691,9 @@ def test_a_credential_on_an_upstream_url_is_refused_while_a_ticket_is_attached(
     # refusal — and the names come from `_naming_a_rail_center()`, the
     # expression that cross-check evaluates.
     assert "unset RAIL_PLUGIN_ENABLED" in str(info.value)
-    assert all(name in str(info.value) for name in proxy_module._naming_a_rail_center())
+    assert all(
+        name in str(info.value) for name in core_settings._naming_a_rail_center()
+    )
     assert "forward without a ticket" in str(info.value)
     # Which is what "cannot drift" has to mean: unset exactly what the message
     # names and the cross-check has nothing left to stop on. A message naming a
@@ -752,7 +701,7 @@ def test_a_credential_on_an_upstream_url_is_refused_while_a_ticket_is_attached(
     for name in [n for n in os.environ if n.startswith("RAIL_")]:
         if name in str(info.value):
             monkeypatch.delenv(name)
-    assert proxy_module.build_ticket_source() is None
+    assert core_settings.build_ticket_source() is None
 
 
 def test_a_username_only_upstream_url_is_a_credential_too(write_config, monkeypatch):
