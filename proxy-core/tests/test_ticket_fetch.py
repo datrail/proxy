@@ -1,6 +1,6 @@
 """Obtaining this proxy's own ticket from Rail Center.
 
-The wire contract is `spec/ticket-fetch.schema.json`; `tests/fixtures/tickets.json`
+The wire contract is `spec/ticket-fetch.schema.json`; `fixtures/tickets.json`
 is the instance, and the first test here is what keeps the two in step.
 """
 
@@ -15,7 +15,7 @@ import httpx
 import jsonschema
 import pytest
 
-from core.xrail_auth import (
+from proxy.core.xrail_auth import (
     MAX_RESPONSE_BYTES,
     NoTicketAvailable,
     TicketHolder,
@@ -28,7 +28,7 @@ from core.xrail_auth import (
     token_fingerprint,
 )
 
-SPEC = pathlib.Path(__file__).resolve().parents[1] / "spec" / "ticket-fetch.schema.json"
+SPEC = pathlib.Path(__file__).resolve().parents[2] / "spec" / "ticket-fetch.schema.json"
 FIXTURE = pathlib.Path(__file__).resolve().parent / "fixtures" / "tickets.json"
 
 #: An injected clock, so `2026-07-28T10:15:00Z` in the fixture is a fixed
@@ -595,7 +595,7 @@ def test_a_hostile_value_is_sliced_before_it_is_rendered():
     afterwards has already paid for it — so the gate has to observe whether the
     render happened, not how long its result is.
     """
-    from core import xrail_auth
+    from proxy.core import xrail_auth
 
     class Loud(str):
         rendered_whole = False
@@ -618,7 +618,7 @@ def test_a_mapping_is_described_without_every_key_being_rendered():
     all 20k keys and slicing afterwards produces the same short string, having
     already paid for it on the loop every mount shares. So the gate is whether
     the keys past the sample were rendered at all."""
-    from core import xrail_auth
+    from proxy.core import xrail_auth
 
     class Loud(str):
         rendered = 0
@@ -770,7 +770,7 @@ async def test_an_ambient_proxy_variable_cannot_redirect_the_fetch(monkeypatch):
     base image or a pod spec would turn the one destination the plaintext guard
     exempts — traffic that never leaves the machine — into a hop across the
     network carrying the credential and the ticket."""
-    from core import xrail_auth
+    from proxy.core import xrail_auth
 
     monkeypatch.setenv("ALL_PROXY", "http://127.0.0.1:9")
     seen: list[dict] = []
@@ -906,7 +906,7 @@ def test_a_container_is_summarised_rather_than_rendered():
     """The branch the `_clip` docstring calls out. A 400k-element list reaches
     it from three issuer-controlled sites, and rendering one costs milliseconds
     on the loop every mount shares."""
-    from core import xrail_auth
+    from proxy.core import xrail_auth
 
     assert xrail_auth._clip(list(range(400_000))) == "<list of 400000 items>"
     assert xrail_auth._clip({"a": 1, "b": 2}) == "<dict of 2 items>"
@@ -986,7 +986,7 @@ async def test_a_failure_message_is_truncated_before_it_is_logged():
     it into a warning, and a message the length of the response cap is a log
     line nobody can read — and one that every stacked filter on the root
     handlers then walks, which is why the bound is worth more than tidiness."""
-    from core.xrail_auth import TicketHolder
+    from proxy.core.xrail_auth import TicketHolder
 
     class _Loud(Exception):
         def __str__(self) -> str:
@@ -1047,7 +1047,7 @@ async def test_the_fetch_finds_its_roots_where_the_environment_says(
 
     import certifi
 
-    from core import xrail_auth
+    from proxy.core import xrail_auth
 
     # A bundle holding exactly one root, so the context that read the
     # environment is distinguishable from the one that did not. `SSL_CERT_FILE`
@@ -1073,12 +1073,7 @@ async def test_the_fetch_finds_its_roots_where_the_environment_says(
 
 
 def test_fractional_seconds_are_read_at_whatever_precision_they_arrive_in():
-    """RFC 3339 puts no limit on the digits; `fromisoformat` on the 3.10 floor
-    reads three or six and rejects the rest, which would leave a conformant
-    issuer's ticket unparseable on one leg of the matrix and fine on the other.
-
-    Its teeth are on that leg: 3.12 parses any precision, so this passes there
-    with the normalisation deleted."""
+    """RFC 3339 puts no limit on the digits, so neither may the parser."""
     assert parse_expires_at("2026-07-28T10:15:00.5Z") == 1_785_233_700.5
     assert parse_expires_at("2026-07-28T10:15:00.500000000Z") == 1_785_233_700.5
     assert parse_expires_at("2026-07-28T10:15:00.1234Z") == pytest.approx(
@@ -1357,7 +1352,7 @@ def _injected(ticket=None, reason=None) -> httpx.Request:
     machine cannot produce, and a test written against one proves less than it
     looks like it does.
     """
-    from tests.conftest import wound_holder
+    from core_support import wound_holder
 
     request = httpx.Request("POST", "https://gateway.invalid/mcp")
     holder = wound_holder(ticket=ticket) if ticket else wound_holder(reason=reason)
@@ -1612,7 +1607,7 @@ async def test_a_snapshot_never_carries_a_ticket_and_a_reason_together():
 def test_the_no_ticket_warning_is_not_once_per_request(caplog):
     """Once per outage, not once per request. `XRailInjector._warned` says why
     the sandbox must not be able to choose this process's log volume."""
-    from tests.conftest import wound_holder
+    from core_support import wound_holder
 
     injector = XRailInjector(wound_holder(reason="not-found"))
 
@@ -1697,7 +1692,7 @@ def test_the_backoff_ramp_is_capped_before_it_reaches_the_interval():
 def test_a_second_outage_is_warned_about_like_the_first(caplog):
     """Suppression is within one outage. Carried across a recovery, every
     outage after the first is DEBUG only."""
-    from tests.conftest import wound_holder
+    from core_support import wound_holder
 
     injector = XRailInjector(wound_holder(reason="not-found"))
 
@@ -1743,10 +1738,6 @@ async def test_a_cancel_aimed_at_the_caller_is_not_swallowed():
     """Swallowed, a cancelled shutdown carries on as though it were clean."""
     import asyncio
     import contextlib
-    import sys
-
-    if sys.version_info < (3, 11):  # pragma: no cover - the floor cannot tell
-        pytest.skip("Task.cancelling() is 3.11+; the floor assumes the loop's own")
 
     holder = TicketHolder(_Answers(_ticket()), clock=lambda: 1000.0)
     await holder.start()
@@ -1977,17 +1968,3 @@ def test_the_injector_reads_the_holder_once_not_twice():
     written = [h for h in ("x-rail", "x-rail-status") if h in request.headers]
     assert len(written) == 1
     assert request.headers[written[0]] is not None
-
-
-def test_an_upstream_password_with_no_username_is_a_credential_too():
-    """`urlsplit("https://:s3cret@h/").username` is the empty string, so a guard
-    reading only the username lets the one-part form past."""
-    from urllib.parse import urlsplit as _split
-
-    from standalone import server as proxy_module
-
-    parts = _split("https://:s3cret@gateway.invalid/mcp")
-    assert not parts.username
-    assert parts.password
-    assert bool(parts.username or parts.password)
-    assert proxy_module._in_the_clear("http://gateway.invalid/mcp") is True

@@ -13,7 +13,7 @@ quickstart as well as the test.
 
 ## What it proves that the unit suite cannot
 
-`tests/` drives the application in-process, through an ASGI transport and a mock
+The unit suite drives the application in-process, through an ASGI transport and a mock
 HTTP transport. That covers the behaviour thoroughly and cannot cover any of
 this:
 

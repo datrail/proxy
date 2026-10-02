@@ -18,9 +18,10 @@ import pytest
 from fastmcp import Client
 from fastmcp.client.transports import StreamableHttpTransport
 
-from standalone import server as proxy_module
-from standalone.server import McpMethodCompat
-from tests.conftest import MCP_ACCEPT, _client_kwargs, wound_holder
+from core_support import wound_holder
+from proxy.standalone import server as proxy_module
+from proxy.standalone.server import McpMethodCompat
+from standalone_support import MCP_ACCEPT, _client_kwargs
 
 
 @contextlib.asynccontextmanager
@@ -500,7 +501,7 @@ async def test_a_rotation_is_picked_up_without_a_restart(config, upstream):
     """httpx calls the auth flow per request, so a ticket that rotates mid-life
     reaches the next call. Read once at mount time, every call after a rotation
     would carry an identity Rail Center has already replaced."""
-    from core.xrail_auth import Token
+    from proxy.core.xrail_auth import Token
 
     holder = wound_holder(ticket="first")
 
@@ -544,7 +545,7 @@ async def test_health_reports_what_is_held_without_reporting_the_ticket(
 ):
     """What an operator needs when calls are being denied downstream, and what
     an endpoint the sandbox can reach must not hand out."""
-    from core.xrail_auth import token_fingerprint
+    from proxy.core.xrail_auth import token_fingerprint
 
     monkeypatch.setenv("RAIL_PLUGIN_ENABLED", "true")
     holder = wound_holder(ticket="rc_ticket_opaque")

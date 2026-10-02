@@ -5,7 +5,9 @@
 # is an environment variable, and the defaults are in brackets:
 #
 #   RAIL_PROXY_CONFIG_FILE   this file's path        (standalone/bridge.yaml,
-#                            which nothing ships — mount or write one)
+#                            relative to the working directory; in the image
+#                            /app/standalone/bridge.yaml, which nothing ships —
+#                            mount or write one)
 #   RAIL_PROXY_BIND          interface to listen on  (0.0.0.0)
 #   RAIL_PROXY_PORT          port to listen on       (8091)
 #   RAIL_PROXY_LOG_LEVEL                             (INFO)

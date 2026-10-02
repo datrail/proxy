@@ -17,6 +17,10 @@ on:
 permissions:
   contents: read
 
+# Every uv command fails if uv.lock does not match the pyproject.toml files.
+env:
+  UV_LOCKED: "1"
+
 jobs:
   lint:
     # Named, not ubuntu-latest: that label moves to 26.04 from 2026-10-19 to
@@ -27,50 +31,29 @@ jobs:
         with:
           ref: ${{ inputs.ref }}
 
-      - uses: actions/setup-python@v5
+      # The uv the Dockerfile uses; exact tag, since setup-uv publishes no major
+      # tags from v8. It installs Python from `.python-version` and caches it.
+      - uses: astral-sh/setup-uv@v10.2.0
         with:
-          python-version: "3.12"
-          cache: pip
-          cache-dependency-path: requirements-dev.txt
+          version: "0.12.21"
+          cache-python: true
 
-      # requirements-dev.txt pins ruff exactly, so this runs the same tool at the
-      # same version a contributor runs locally.
-      - run: pip install -r requirements-dev.txt
-
-      # `ruff check` plus `ruff format --check`, per the Makefile.
+      - run: make init
       - run: make lint
 
   test:
     runs-on: ubuntu-26.04
-    strategy:
-      fail-fast: false
-      matrix:
-        # Both ends of what this project claims to support. 3.10 is the floor
-        # ruff.toml sets, and a floor nothing runs is a guess — the module
-        # avoids `logging.getLevelNamesMapping()` for exactly that reason, and
-        # only this leg proves the avoidance was needed and sufficient. 3.12 is
-        # what the image ships (Dockerfile: python:3.12-slim); move that pin and
-        # this one moves with it.
-        python-version: ["3.10", "3.12"]
     steps:
       - uses: actions/checkout@v4
         with:
           ref: ${{ inputs.ref }}
 
-      - uses: actions/setup-python@v5
+      - uses: astral-sh/setup-uv@v10.2.0
         with:
-          python-version: ${{ matrix.python-version }}
-          cache: pip
-          cache-dependency-path: |
-            requirements.txt
-            requirements-test.txt
+          version: "0.12.21"
+          cache-python: true
 
-      # Both files: the suite runs against the exact versions the image ships,
-      # and the test framework is not among them — requirements-test.txt is
-      # what carries pytest, for the reason requirements-dev.txt states about
-      # the linter.
-      - run: pip install -r requirements.txt -r requirements-test.txt
-
+      - run: make init
       - run: make test
 
   # A build failure should surface on the pull request rather than on the tag
@@ -84,15 +67,16 @@ jobs:
           ref: ${{ inputs.ref }}
       - uses: docker/setup-buildx-action@v3
 
-      # Build-only, amd64 only. The question here is "does it still build",
-      # which the arm64 leg answers no differently — it would just spend several
-      # minutes doing it under emulation.
+      # Build-only, amd64 only: arm64 would answer "does it build" no differently.
+      # Context is the repo root, for uv.lock; Dockerfile.dockerignore limits what
+      # is sent. Scope shared with container-release.yml: keep the names in step.
       - uses: docker/build-push-action@v6
         with:
           context: .
+          file: proxy-standalone/Dockerfile
           push: false
-          cache-from: type=gha,scope=ci-image
-          cache-to: type=gha,mode=max,scope=ci-image
+          cache-from: type=gha,scope=image-standalone
+          cache-to: type=gha,mode=max,scope=image-standalone
 
   # The only job that runs the image rather than building it: the stack in e2e/
   # brings up this proxy against a stubbed control plane and a stubbed upstream

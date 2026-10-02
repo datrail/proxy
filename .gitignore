@@ -17,7 +17,8 @@ venv/
 .env.local
 
 # Runtime config — copied from bridge.yaml.example and edited per deployment
-standalone/bridge.yaml
+/bridge.yaml
+/standalone/bridge.yaml
 
 # Tool caches
 .pytest_cache/

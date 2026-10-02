@@ -7,42 +7,21 @@ calls without exposing it to the agent.
 
 ## Quick start
 
-Create a bridge configuration from
-[`standalone/bridge.yaml.example`](standalone/bridge.yaml.example), then
-run in forwarding-only mode:
+Run it in forwarding-only mode, with the example bridge configuration:
 
 ```bash
 git clone https://github.com/datrail/proxy.git
 cd proxy
-cp standalone/bridge.yaml.example bridge.yaml
+cp proxy-standalone/bridge.yaml.example bridge.yaml
 docker run --rm -p 8091:8091 \
   -v "$PWD/bridge.yaml:/app/standalone/bridge.yaml:ro" \
   ghcr.io/datrail/proxy:latest
 ```
 
-That is the whole of forwarding-only: `RAIL_PLUGIN_ENABLED` is off by default,
-so a proxy nobody has given RailXia configuration needs no variable at all.
-
-To attach an identity, set `RAIL_PLUGIN_ENABLED=true` and add
-`RAIL_CENTER_URL`, `RAIL_HOST_ID`, and `RAIL_SANDBOX_NAME` — those three beside
-a plugin that is off is refused at startup, so a deployment cannot lose the flag
-by itself and quietly stop attaching. Losing the whole block at once still can:
-an env file that fails to mount takes the flag and the three with it, and the
-proxy comes up as a plain proxy, saying so at INFO. Watch that the variables
-arrive, not just that the container is healthy. [`.env.example`](.env.example) documents all
-environment variables. The proxy serves MCP at `POST /mcp` and liveness at `GET /health`.
+To attach an identity, and for the full configuration, see
+[proxy-standalone](proxy-standalone/README.md).
 
 ## Architecture
-
-The repository has one dependency direction: the standalone host imports the
-vendor-neutral injection core. The core never imports the host or a future
-plugin. [`docs/layout.md`](docs/layout.md) records the layout decisions shared
-with DatRail Gateway.
-
-```text
-core/        ticket lifecycle and byte-for-byte x-rail injection
-standalone/  FastMCP host, process configuration, and bridge file
-```
 
 ```mermaid
 flowchart LR
@@ -58,6 +37,39 @@ valid ticket is available it forwards no identity and sets an `x-rail-status`
 reason. The fetch response is defined by
 [`spec/ticket-fetch.schema.json`](spec/ticket-fetch.schema.json).
 
+The proxy and [DatRail Gateway](https://github.com/datrail/gateway) have
+separate, responsibility-specific cores: the proxy obtains and injects an opaque
+ticket, the gateway parses it and makes an enforcement decision. They share no
+runtime library, and their only shared boundary is the `x-rail` wire contract,
+which keeps the proxy from learning claims it must treat as opaque.
+
+The proxy targets `x-rail` `v1.0`, at `datrail/x-rail-spec` commit
+`1282f71495d9b585b6562255f5194f0754e3d586`. A wire change lands in
+x-rail-spec first, under a new version; the proxy and the gateway then update
+this pin and their conformance tests. The proxy's release versions do not
+version the wire contract.
+
+## Layout
+
+Each part is its own package in one [uv workspace](https://docs.astral.sh/uv/concepts/projects/workspaces/),
+with one `uv.lock` pinning every dependency, and each image installs only the
+packages it runs:
+
+| Package | Import | What it holds |
+|---|---|---|
+| [proxy-core](proxy-core/README.md) | `proxy.core` | ticket lifecycle and byte-for-byte `x-rail` injection |
+| [proxy-standalone](proxy-standalone/README.md) | `proxy.standalone` | FastMCP host, process configuration and bridge file; its Dockerfile builds `ghcr.io/datrail/proxy` |
+
+Dependencies point one way: every interface imports the vendor-neutral core,
+and the core imports no interface. More generally, a package imports only the
+packages its `pyproject.toml` declares, and
+[`test_architecture.py`](proxy-core/tests/test_architecture.py) enforces it.
+
+A new interface is a `proxy-<name>/` package importing as `proxy.<name>`,
+with its own Dockerfile and image. Name it after its extension mechanism, not a
+cloud vendor (`proxy-ext-proc`, not `proxy-gcp`), so one implementation can
+serve every platform that speaks that mechanism.
+
 ## Security
 
 An `x-rail` ticket is a bearer credential. Do not log it, expose it to the
@@ -68,14 +80,14 @@ GitHub Security Advisories.
 
 ## Development
 
+Requires [uv](https://docs.astral.sh/uv/), which also installs the Python
+version in `.python-version`.
+
 ```bash
-python -m venv .venv
-. .venv/bin/activate
-pip install -r requirements-test.txt -r requirements-dev.txt
+make init    # uv sync: every member, editable, plus the pinned dev tools
 make test
-make lint
-docker compose -f e2e/compose.yml up --build \
-  --abort-on-container-exit --exit-code-from driver
+make lint    # `make fmt` formats and fixes instead of only checking
+make e2e     # the image against a stubbed Rail Center and upstream
 ```
 
 ## Related projects

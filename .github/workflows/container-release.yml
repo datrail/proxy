@@ -6,8 +6,9 @@
 # ghcr.io/<owner>/<repo>:0.1.0, :0.1, and :latest, multi-arch, with an SBOM and
 # a signed build-provenance attestation.
 #
-# Requires a Dockerfile at the repository root; a component that keeps one
-# elsewhere has to edit the build step.
+# Builds proxy-standalone/Dockerfile, with the repository root as context (the
+# image installs from uv.lock). A second image needs its own build step and image
+# name: this one publishes as the repository's name, which deployments pull.
 name: Release Container Images
 
 on:
@@ -129,6 +130,7 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: .
+          file: proxy-standalone/Dockerfile
           platforms: linux/amd64,linux/arm64
           push: true
           tags: ${{ steps.meta.outputs.tags }}
@@ -138,13 +140,10 @@ jobs:
           # attestation below makes redundant. Off, so the image carries one
           # provenance record rather than two with different trust in them.
           provenance: false
-          # Scope the cache so a second build job added to this repo later does
-          # not silently share one `buildkit` scope with this one. A literal
-          # rather than ${{ github.workflow }}: that resolves to the display
-          # name, which is prose — rewording it would silently cold-start this
-          # cache, and it currently contains spaces.
-          cache-from: type=gha,scope=container-release
-          cache-to: type=gha,mode=max,scope=container-release
+          # Shared with ci.yml's image job, so a release reuses its amd64 layers:
+          # keep the two names in step. A literal, not ${{ github.workflow }}.
+          cache-from: type=gha,scope=image-standalone
+          cache-to: type=gha,mode=max,scope=image-standalone
 
       # Signed, verifiable statement that this digest came from this workflow:
       # `gh attestation verify oci://ghcr.io/<owner>/<repo>:<tag> --owner <org>`.

@@ -1,0 +1,14 @@
+# Used instead of a root .dockerignore when building with
+# -f proxy-standalone/Dockerfile. Send only what this image needs: another
+# member's changes never touch its cache.
+**
+!LICENSE
+!NOTICE
+!pyproject.toml
+!uv.lock
+!proxy-core/pyproject.toml
+!proxy-core/src/**
+!proxy-standalone/pyproject.toml
+!proxy-standalone/bridge.yaml.example
+!proxy-standalone/src/**
+**/__pycache__
