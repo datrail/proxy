@@ -14,7 +14,7 @@ from proxy.envoy_grpc.settings import ProtectedHost
 
 def _hosts(monkeypatch, value, *, plugin_on=True):
     monkeypatch.setenv("RAIL_PROXY_PROTECTED_HOSTS", value)
-    return settings.protected_hosts(plugin_on=plugin_on)
+    return settings.get_protected_hosts(plugin_on=plugin_on)
 
 
 @pytest.mark.parametrize(
@@ -127,11 +127,11 @@ def test_the_plugin_on_with_no_protected_host_is_refused(monkeypatch, value):
         monkeypatch.setenv("RAIL_PROXY_PROTECTED_HOSTS", value)
 
     with pytest.raises(ConfigError, match="at least one host"):
-        settings.protected_hosts(plugin_on=True)
+        settings.get_protected_hosts(plugin_on=True)
 
 
 def test_the_plugin_off_reads_the_list_and_accepts_none(monkeypatch):
-    assert settings.protected_hosts(plugin_on=False) == {}
+    assert settings.get_protected_hosts(plugin_on=False) == {}
     assert list(_hosts(monkeypatch, "mcp.example.com", plugin_on=False)) == [
         "mcp.example.com"
     ]
@@ -183,4 +183,4 @@ def test_the_socket_path(monkeypatch, value, expected):
     if value is not None:
         monkeypatch.setenv("RAIL_PROXY_EXT_SOCKET", value)
 
-    assert settings.ext_socket() == expected
+    assert settings.get_socket_path() == expected

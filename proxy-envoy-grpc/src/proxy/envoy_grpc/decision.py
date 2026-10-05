@@ -17,7 +17,7 @@ from proxy.core.xrail_auth import (
 )
 from proxy.envoy_grpc.settings import ProtectedHost
 
-#: The agent's port that means "no port": the default for the `http` it speaks.
+# The agent's port that means "no port": the default for the `http` it speaks.
 _AGENT_DEFAULT_PORT = 80
 
 

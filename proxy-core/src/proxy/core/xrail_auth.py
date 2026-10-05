@@ -1029,6 +1029,15 @@ class TicketHeaders:
     def for_request(self, destination: object) -> OutboundHeaders:
         """The headers for a request to `destination`, which is only logged."""
         outbound = outbound_headers(self.holder)
+        self.report(destination, outbound)
+        return outbound
+
+    def report(self, destination: object, outbound: OutboundHeaders) -> None:
+        """Log what `outbound` attaches to a request to `destination`.
+
+        Separate from `for_request` for an interface that decides first whether
+        a request gets the headers at all, and logs only for those that do.
+        """
         ticket = outbound.headers.get(XRAIL_HEADER)
         reason = outbound.headers.get(XRAIL_STATUS_HEADER)
         if ticket is not None:
@@ -1049,7 +1058,6 @@ class TicketHeaders:
                 XRAIL_STATUS_HEADER,
                 reason,
             )
-        return outbound
 
 
 class XRailInjector(httpx.Auth):

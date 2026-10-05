@@ -4,7 +4,9 @@
 request, and it adds the `x-rail` headers to requests for protected hosts. See
 the [main README](../README.md) for the whole.
 
-Work in progress (DR-146): so far, only its settings.
+Work in progress (DR-146): the server runs, with
+`python -m proxy.envoy_grpc.server`, and `python -m proxy.envoy_grpc.health`
+probes it over the same socket. There is no image or Envoy config yet.
 
 ## How it works
 

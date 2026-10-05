@@ -10,7 +10,7 @@ from proxy.core.xrail_auth import OutboundHeaders, outbound_headers
 from proxy.envoy_grpc import settings
 from proxy.envoy_grpc.decision import Decision, decide
 
-#: What an ordinary MCP client sends, besides anything a test adds.
+# What an ordinary MCP client sends, besides anything a test adds.
 _ORDINARY = {
     "host": "mcp.example.com",
     "accept": "application/json, text/event-stream",
@@ -24,7 +24,7 @@ _ORDINARY = {
 
 def _protected_hosts(monkeypatch, value):
     monkeypatch.setenv("RAIL_PROXY_PROTECTED_HOSTS", value)
-    return settings.protected_hosts(plugin_on=False)
+    return settings.get_protected_hosts(plugin_on=False)
 
 
 def _forwarded(agent: dict[str, str], decision: Decision) -> dict[str, str]:

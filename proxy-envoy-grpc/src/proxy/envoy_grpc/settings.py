@@ -110,7 +110,7 @@ def _get_comma_separated_env(name: str) -> list[str]:
     ]
 
 
-def protected_hosts(*, plugin_on: bool) -> dict[str, ProtectedHost]:
+def get_protected_hosts(*, plugin_on: bool) -> dict[str, ProtectedHost]:
     """The protected hosts, by the normalized host a request is matched on."""
     hosts: dict[str, ProtectedHost] = {}
     for entry in _get_comma_separated_env(_PROTECTED_HOSTS):
@@ -133,7 +133,7 @@ def protected_hosts(*, plugin_on: bool) -> dict[str, ProtectedHost]:
     return hosts
 
 
-def ext_socket() -> Path:
+def get_socket_path() -> Path:
     """The unix socket Envoy calls."""
     raw = os.environ.get("RAIL_PROXY_EXT_SOCKET", "").strip()
     return Path(raw) if raw else _DEFAULT_SOCKET
