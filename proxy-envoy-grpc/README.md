@@ -23,7 +23,8 @@ sent. The service then looks at the request's host:
   one, else the agent's.
 
 The agent's other headers are forwarded as sent, to protected hosts too,
-`Authorization` included.
+`Authorization` included, except any with `_` in its name: Envoy drops those,
+since many servers read `_` as `-`, and `x_rail` would reach one as `x-rail`.
 
 The service always answers OK: it changes a request, and never refuses one.
 

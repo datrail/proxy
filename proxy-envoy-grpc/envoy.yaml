@@ -24,6 +24,10 @@ static_resources:
                 # Envoy adds none of its own request headers upstream.
                 generate_request_id: false
                 skip_xff_append: true
+                # Many servers read `_` in a header name as `-`, so `x_rail`
+                # would reach one as `x-rail`. Any header with one is dropped.
+                common_http_protocol_options:
+                  headers_with_underscores_action: DROP_HEADER
                 access_log:
                   - name: envoy.access_loggers.stdout
                     typed_config:

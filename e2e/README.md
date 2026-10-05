@@ -122,7 +122,7 @@ Every extension protects `upstream.test:8443`, `upstream-agent-port.test`,
 | `open` | HTTP on 8080 | `open.test:8080`: not protected, so left alone |
 | `evil` | HTTPS on 8443, certificate for `evil.test` only; `upstream.test` on `envoy-misresolved`'s network | only directly, as the driver's check that it serves TLS |
 
-Every request carries a forged `x-rail`, `x-rail-status` and `x-rail-foo`,
-which never cross, and the agent's own `x-trace` and `Authorization`, which
-cross as sent. Envoy also adds `X-Forwarded-Proto: http` (the agent's side),
-on both.
+Every request carries a forged `x-rail`, `x-rail-status`, `x-rail-foo`,
+`x_rail` and `x_rail_status`, which never cross, and the agent's own `x-trace`
+and `Authorization`, which cross as sent. Envoy also adds `X-Forwarded-Proto:
+http` (the agent's side), on both.

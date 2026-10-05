@@ -45,8 +45,8 @@ if no valid ticket is available it forwards no identity and sets an
 The two forms differ in what else crosses. proxy-standalone makes every call to
 the upstream itself, so none of the agent's headers reach it. proxy-envoy-grpc
 changes the agent's own request, so the agent's other headers reach the
-upstream as sent; only its `x-rail` headers are removed, and only protected
-hosts get the ticket. The fetch response is defined by
+upstream as sent; only its `x-rail` headers, and any with `_` in the name, are
+removed, and only protected hosts get the ticket. The fetch response is defined by
 [`spec/ticket-fetch.schema.json`](spec/ticket-fetch.schema.json).
 
 The proxy and [DatRail Gateway](https://github.com/datrail/gateway) have

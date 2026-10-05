@@ -51,7 +51,8 @@ quiet.
     `Authorization` included: an agent's own credentials for a server are its
     own business. What it must never forward is an `x-rail` or `x-rail-*`
     header the agent wrote: Envoy removes them before calling the service,
-    and the service removes any that remain. An agent-written `x-rail` header
+    and the service removes any that remain. Envoy also drops every header
+    with `_` in its name, since many servers read `x_rail` as `x-rail`. An agent-written `x-rail` header
     reaching an upstream through Envoy is a report.
 - **Ticket handling.** A ticket is a bearer credential for its lifetime. It must
   not reach a log, an error message, a crash dump, or any host other than the
