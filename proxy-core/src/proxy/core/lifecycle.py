@@ -5,8 +5,6 @@ health. Only whether startup waits for the first fetch differs between them, so
 that is the one parameter.
 """
 
-from __future__ import annotations
-
 import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager

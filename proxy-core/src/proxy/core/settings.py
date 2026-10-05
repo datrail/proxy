@@ -7,8 +7,6 @@ bounds on the fetch. What an interface serves, and how it is bound, stays in
 that interface.
 """
 
-from __future__ import annotations
-
 import logging
 import math
 import os

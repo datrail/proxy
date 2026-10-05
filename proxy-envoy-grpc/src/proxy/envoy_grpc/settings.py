@@ -5,8 +5,6 @@ Here: which hosts are protected and how to reach them, and the socket Envoy
 calls.
 """
 
-from __future__ import annotations
-
 import ipaddress
 import os
 import re

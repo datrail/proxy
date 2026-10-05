@@ -1,7 +1,5 @@
 """Shared fixtures: a recording upstream, and the config the proxy reads."""
 
-from __future__ import annotations
-
 import pathlib
 from typing import Any
 

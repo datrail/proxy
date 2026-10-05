@@ -1,8 +1,6 @@
 """Tests for the Envoy extension's settings: the protected hosts and the socket
 path. The ticket's settings are tested in proxy-core."""
 
-from __future__ import annotations
-
 from pathlib import Path
 
 import pytest

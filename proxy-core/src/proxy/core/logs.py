@@ -4,8 +4,6 @@
 url never reaches a log line whichever library wrote it.
 """
 
-from __future__ import annotations
-
 import logging
 import os
 import traceback

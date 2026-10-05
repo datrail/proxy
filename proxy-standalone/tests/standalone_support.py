@@ -1,7 +1,5 @@
 """Helpers for the proxy-standalone suite: a recording MCP upstream."""
 
-from __future__ import annotations
-
 import json
 from typing import Any
 

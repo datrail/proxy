@@ -4,8 +4,6 @@
 line, so most of what is here is about the shapes a record can arrive in.
 """
 
-from __future__ import annotations
-
 import logging
 import sys
 

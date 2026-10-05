@@ -1,8 +1,6 @@
 """Tests for the per-request decision: which x-rail headers are set or removed,
 and where a protected request is sent."""
 
-from __future__ import annotations
-
 import pytest
 
 from core_support import xrail_params

@@ -17,8 +17,6 @@ inside a URL — the same thing `_parse_base` and `describe` are careful about.
 `proxy.core.logs.RedactingFilter` is what applies it on every handler.
 """
 
-from __future__ import annotations
-
 import asyncio
 import hashlib
 import ipaddress

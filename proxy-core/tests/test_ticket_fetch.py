@@ -4,8 +4,6 @@ The wire contract is `spec/ticket-fetch.schema.json`; `fixtures/tickets.json`
 is the instance, and the first test here is what keeps the two in step.
 """
 
-from __future__ import annotations
-
 import base64
 import json
 import pathlib

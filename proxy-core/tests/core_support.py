@@ -1,7 +1,5 @@
 """Helpers for the proxy-core suite, and for the members built on proxy-core."""
 
-from __future__ import annotations
-
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 

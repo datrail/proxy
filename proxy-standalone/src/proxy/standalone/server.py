@@ -10,8 +10,6 @@ forwards. Obtaining and holding that ticket is `xrail_auth`'s.
 It is also the boundary: no header the agent supplies reaches an upstream.
 """
 
-from __future__ import annotations
-
 import asyncio
 import logging
 import os

@@ -4,8 +4,6 @@ Pure: no I/O, no logging. The gRPC servicer reads a request, calls `decide`,
 and turns the result into Envoy's answer.
 """
 
-from __future__ import annotations
-
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from urllib.parse import urlsplit
