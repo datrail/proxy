@@ -10,10 +10,8 @@ forwards. Obtaining and holding that ticket is `xrail_auth`'s.
 It is also the boundary: no header the agent supplies reaches an upstream.
 """
 
-import asyncio
 import logging
 import os
-import sys
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
@@ -520,7 +518,3 @@ async def main() -> int:
         install_redaction()
         await server.serve()
     return 0
-
-
-if __name__ == "__main__":
-    sys.exit(asyncio.run(main()))

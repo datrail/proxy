@@ -47,4 +47,4 @@ EXPOSE 8091
 
 # Exec form, so python is PID 1 and receives SIGTERM. CMD rather than ENTRYPOINT,
 # so a replacement command (e2e's `sleep infinity`) runs as given.
-CMD ["python", "-m", "proxy.standalone.server"]
+CMD ["python", "-m", "proxy.standalone"]
