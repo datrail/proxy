@@ -92,6 +92,11 @@ make e2e     # the image against a stubbed Rail Center and upstream
 
 ## Related projects
 
+- [datrail-project](https://github.com/datrail/datrail-project#readme) is the
+  entry point to DatRail: how the components fit together, and a quick start for
+  RailMon and RailDash. The
+  [DatRail glossary](https://github.com/datrail/datrail-project/blob/master/docs/glossary.md)
+  defines the terms they share.
 - [DatRail Gateway](https://github.com/datrail/gateway) enforces policy.
 - [RailMon](https://github.com/datrail/railmon) observes agent traffic.
 - [RailDash](https://github.com/datrail/raildash) presents captures locally.
