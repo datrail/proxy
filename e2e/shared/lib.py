@@ -113,10 +113,10 @@ def drive(url, headers):
         },
         headers,
     )
-    # `"isError":false` is the leg that does the work: fastmcp turns the
-    # upstream's JSON-RPC error into a *successful* result carrying
-    # `"isError":true`, so matching `"result"` alone passes on a call that
-    # failed. Matched as text, because the proxy may frame it as an SSE event.
+    # `"isError":false` is the leg that does the work: a proxy may hand an
+    # upstream's error back as a *successful* result carrying `"isError":true`,
+    # so matching `"result"` alone passes on a call that failed. Matched as
+    # text, because the proxy may frame it as an SSE event.
     try:
         body = _post(
             url,

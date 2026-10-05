@@ -1,12 +1,8 @@
-# The standalone proxy, a control plane and an upstream, in containers,
-# asserting what actually crossed the wire. `docker compose up` is both the test
-# and the quickstart: it is the only path where someone with neither a Rail
-# Center nor a gateway sees a ticket fetched and a header injected.
+# The standalone proxy's e2e stack; e2e/README.md says what each service is for.
 #
 #   docker compose -f e2e/standalone/compose.yml up --build --abort-on-container-exit --exit-code-from driver
 #
-# The result is the driver container's exit code, which --exit-code-from makes
-# the exit code of `docker compose up`.
+# The result is the driver container's exit code.
 
 name: datrail-proxy-e2e-standalone
 
@@ -44,7 +40,6 @@ services:
     volumes:
       - ../shared/mcp-mappings:/home/wiremock/mappings:ro
 
-  # Registered: holds a ticket and attaches it.
   proxy:
     <<: *proxy
     environment:
@@ -52,8 +47,6 @@ services:
       RAIL_SANDBOX_NAME: e2e-sandbox
     depends_on: *attached-depends
 
-  # Unregistered: Rail Center answers, and answers that it has no ticket. The
-  # call still goes out, saying why it carries no identity.
   proxy-unregistered:
     <<: *proxy
     environment:
@@ -61,8 +54,6 @@ services:
       RAIL_SANDBOX_NAME: not-a-registered-sandbox
     depends_on: *attached-depends
 
-  # Expired: Rail Center answers with a ticket whose expires_at has passed. The
-  # proxy holds it and still never sends it.
   proxy-expired:
     <<: *proxy
     environment:
@@ -70,9 +61,6 @@ services:
       RAIL_SANDBOX_NAME: e2e-expired
     depends_on: *attached-depends
 
-  # Issuer down: Rail Center answers this sandbox with a 500, so no answer has
-  # ever landed. Its healthcheck passing is part of the point: a proxy whose
-  # issuer is down still starts, and fails closed.
   proxy-issuer-down:
     <<: *proxy
     environment:
@@ -80,27 +68,15 @@ services:
       RAIL_SANDBOX_NAME: e2e-issuer-down
     depends_on: *attached-depends
 
-  # No control plane at all. Neither header is attached — which is not the
-  # fail-closed path, and the difference is the point of running both.
-  #
-  # It sets nothing: RAIL_PLUGIN_ENABLED is off by default, so a plain proxy is
-  # what an empty environment gets. The others have to say `true`.
   proxy-passthrough:
     <<: *proxy
     depends_on:
       upstream: {condition: service_healthy}
 
-  # The uid the image runs as, against the same build the proxies use. This
-  # assertion is not in driver.py with the others because it cannot be: the
-  # driver is a separate container and a uid is not visible across one, and
-  # reporting it from /health would be a production change made for a test.
-  #
-  # The healthcheck is the assertion, and the driver waiting on it is what makes
-  # it a gate — a wrong uid never reports healthy, so the run stops at
-  # "dependency failed to start" and the driver never executes. It sleeps rather
-  # than checking once and exiting because a container that exits trips
-  # --abort-on-container-exit, which tears the stack down before the driver has
-  # run at all.
+  # Asserts the uid the image runs as, which the driver can't see from its own
+  # container. The healthcheck is the assertion: the driver waits on it, so a
+  # wrong uid stops the run before the driver starts. It sleeps rather than
+  # exiting, because an exit trips --abort-on-container-exit.
   image-user:
     <<: *proxy
     # Nothing to flush, and `sleep` does not handle SIGTERM — without this,
@@ -116,15 +92,11 @@ services:
   # Standard library only, so a stock image runs it with nothing installed.
   driver:
     image: python:3.12-slim
-    environment:
-      # Print each line as it is reached, and write no bytecode into the
-      # read-only mounts.
-      PYTHONUNBUFFERED: "1"
-      PYTHONDONTWRITEBYTECODE: "1"
     volumes:
       - ./driver.py:/e2e/driver.py:ro
       - ../shared/lib.py:/e2e/lib.py:ro
-    command: ["python", "/e2e/driver.py"]
+    # Unbuffered, so each line shows as it is reached rather than at exit.
+    command: ["python", "-u", "/e2e/driver.py"]
     depends_on:
       proxy: {condition: service_healthy}
       proxy-unregistered: {condition: service_healthy}

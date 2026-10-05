@@ -21,12 +21,12 @@ e2e/
 
 ## What it proves that the unit suite cannot
 
-The unit suite drives the application in-process, through an ASGI transport and
-a mock HTTP transport. It cannot show:
+The unit suites drive each interface in-process, with the network mocked. They
+cannot show:
 
-- the **image** runs — the entrypoint, the non-root user, the mounted config path
-- a **real socket**: a real uvicorn, a real DNS name, a real TCP connection
-- FastMCP's client completing a **real handshake over the wire**
+- the **image** runs — the entrypoint, the non-root user, the mounted config
+- a **real socket**: a real server, a real DNS name, a real TCP connection
+- an MCP client completing a **real handshake over the wire**
 - the ticket states side by side in **one network**, which is how they are
   actually told apart
 
@@ -55,15 +55,15 @@ The driver's assertions read WireMock's request journal, not logs. The helpers
 are in `lib.py`, standard library only, and its comments record the WireMock
 pitfalls they guard against.
 
-## Standalone (`standalone/`)
+## Standalone
 
 | Service | Configuration | What the upstream should see |
 |---|---|---|
 | `proxy` | registered as `e2e-sandbox` | `x-rail: e2e-opaque-token` |
 | `proxy-unregistered` | a sandbox name Rail Center does not know | `x-rail-status: not-found`, no identity |
 | `proxy-expired` | `e2e-expired`: the only ticket has lapsed | `x-rail-status: expired`, no identity |
-| `proxy-issuer-down` | `e2e-issuer-down`: Rail Center answers 500 | `x-rail-status: issuer-unreachable`, no identity |
-| `proxy-passthrough` | no RailXia configuration at all | neither header |
+| `proxy-issuer-down` | `e2e-issuer-down`: Rail Center answers 500 | `x-rail-status: issuer-unreachable`, no identity; it still starts and reports healthy |
+| `proxy-passthrough` | sets nothing: the plugin is off by default | neither header |
 | `image-user` | the same image, sleeping | nothing: its healthcheck asserts the uid, and the driver waits on it |
 
 `proxy-passthrough` is *not* the fail-closed path. A proxy with no control
