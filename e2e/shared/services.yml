@@ -1,0 +1,34 @@
+# The services every e2e stack has in common, pulled into each stack's
+# compose.yml with `extends: {file: ../shared/services.yml, service: …}`.
+# Anchors don't cross files; `extends` does. Relative paths here resolve against
+# this directory, whichever stack extends them.
+
+services:
+  wiremock:
+    image: wiremock/wiremock:3.9.1
+    # Response templating keeps expires_at ahead of now, so the fixture does not
+    # rot the way a hardcoded stamp would.
+    command: ["--global-response-templating"]
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8080/__admin/health"]
+      interval: 2s
+      timeout: 3s
+      retries: 15
+
+  # Stands in for Rail Center. Query-parameter matching gives both ticket cases
+  # with no code: e2e-sandbox gets a ticket, anything else gets an empty list —
+  # which is authoritative, not an error.
+  rail-center:
+    extends: {service: wiremock}
+    volumes:
+      - ./rc-mappings:/home/wiremock/mappings:ro
+    # Deliberately not UTC, and deliberately west of UTC−6. The ticket fixture
+    # renders expires_at with a literal `Z` in its format string, so the
+    # `timezone='UTC'` argument on the `now` helper is the only thing making the
+    # value mean what that `Z` claims. On a default-UTC JVM the argument is
+    # unobservable and deleting it leaves the suite green; from Honolulu,
+    # deleting it stamps a ticket four hours in the past and the registered
+    # proxy falls to x-rail-status: expired. This is the one input that makes
+    # the guard visible, so the suite supplies it.
+    environment:
+      TZ: Pacific/Honolulu

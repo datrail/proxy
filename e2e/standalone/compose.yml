@@ -1,0 +1,112 @@
+# The standalone proxy, a control plane and an upstream, in containers,
+# asserting what actually crossed the wire. `docker compose up` is both the test
+# and the quickstart: it is the only path where someone with neither a Rail
+# Center nor a gateway sees a ticket fetched and a header injected.
+#
+#   docker compose -f e2e/standalone/compose.yml up --build --abort-on-container-exit --exit-code-from driver
+#
+# The exit code is the result.
+
+name: datrail-proxy-e2e-standalone
+
+x-proxy: &proxy
+  build:
+    context: ../..
+    dockerfile: proxy-standalone/Dockerfile
+  volumes:
+    - ./bridge.yaml:/app/standalone/bridge.yaml:ro
+  healthcheck:
+    # /health answers 200 whether or not a ticket is held — failing closed is a
+    # designed state — so this is liveness for every variant alike.
+    test: ["CMD", "python", "-c", "import urllib.request;urllib.request.urlopen('http://localhost:8091/health').read()"]
+    interval: 2s
+    timeout: 3s
+    retries: 15
+
+x-attached: &attached
+  RAIL_PLUGIN_ENABLED: "true"
+  RAIL_CENTER_URL: http://rail-center:8080
+  RAIL_HOST_ID: host-e2e
+
+x-attached-depends: &attached-depends
+  rail-center: {condition: service_healthy}
+  upstream: {condition: service_healthy}
+
+services:
+  rail-center:
+    extends: {file: ../shared/services.yml, service: rail-center}
+
+  # Stands in for an MCP server, and records every request so the driver can
+  # assert on headers rather than on log output.
+  upstream:
+    extends: {file: ../shared/services.yml, service: wiremock}
+    volumes:
+      - ../shared/mcp-mappings:/home/wiremock/mappings:ro
+
+  # Registered: holds a ticket and attaches it.
+  proxy:
+    <<: *proxy
+    environment:
+      <<: *attached
+      RAIL_SANDBOX_NAME: e2e-sandbox
+    depends_on: *attached-depends
+
+  # Unregistered: Rail Center answers, and answers that it has no ticket. The
+  # call still goes out, saying why it carries no identity.
+  proxy-unregistered:
+    <<: *proxy
+    environment:
+      <<: *attached
+      RAIL_SANDBOX_NAME: not-a-registered-sandbox
+    depends_on: *attached-depends
+
+  # No control plane at all. Neither header is attached — which is not the
+  # fail-closed path, and the difference is the point of running both.
+  #
+  # It sets nothing: RAIL_PLUGIN_ENABLED is off by default, so a plain proxy is
+  # what an empty environment gets. The others have to say `true`.
+  proxy-passthrough:
+    <<: *proxy
+    depends_on:
+      upstream: {condition: service_healthy}
+
+  # The uid the image runs as, against the same build the proxies use. This
+  # assertion is not in driver.py with the others because it cannot be: the
+  # driver is a separate container and a uid is not visible across one, and
+  # reporting it from /health would be a production change made for a test.
+  #
+  # The healthcheck is the assertion, and the driver waiting on it is what makes
+  # it a gate — a wrong uid never reports healthy, so the run stops at
+  # "dependency failed to start" and the driver never executes. It sleeps rather
+  # than checking once and exiting because a container that exits trips
+  # --abort-on-container-exit, which tears the stack down before the driver has
+  # run at all.
+  image-user:
+    <<: *proxy
+    # Nothing to flush, and `sleep` does not handle SIGTERM — without this,
+    # teardown waits out the full stop grace period on every run.
+    command: ["sleep", "infinity"]
+    stop_grace_period: 0s
+    healthcheck:
+      test: ["CMD", "sh", "-c", "test \"$(id -u)\" = 10001"]
+      interval: 1s
+      timeout: 2s
+      retries: 3
+
+  # Standard library only, so a stock image runs it with nothing installed.
+  driver:
+    image: python:3.12-slim
+    environment:
+      # Print each line as it is reached, and write no bytecode into the
+      # read-only mounts.
+      PYTHONUNBUFFERED: "1"
+      PYTHONDONTWRITEBYTECODE: "1"
+    volumes:
+      - ./driver.py:/e2e/driver.py:ro
+      - ../shared/lib.py:/e2e/lib.py:ro
+    command: ["python", "/e2e/driver.py"]
+    depends_on:
+      proxy: {condition: service_healthy}
+      proxy-unregistered: {condition: service_healthy}
+      proxy-passthrough: {condition: service_healthy}
+      image-user: {condition: service_healthy}
