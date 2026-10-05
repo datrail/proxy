@@ -5,6 +5,13 @@ It stands between an AI agent and its MCP servers, fetches an `x-rail` ticket
 for the configured host and sandbox, and attaches that ticket to forwarded
 calls without exposing it to the agent.
 
+It comes in two forms:
+
+- [proxy-standalone](proxy-standalone/README.md): an MCP proxy the agent
+  connects to.
+- [proxy-envoy-grpc](proxy-envoy-grpc/README.md): a service that Envoy calls
+  to add the ticket to the agent's own HTTP requests.
+
 ## Quick start
 
 Run it in forwarding-only mode, with the example bridge configuration:
@@ -31,10 +38,15 @@ flowchart LR
   gateway --> server[MCP server]
 ```
 
-Agent-supplied headers do not cross the proxy boundary. With
-`RAIL_PLUGIN_ENABLED=true` the proxy fetches and refreshes its own ticket; if no
-valid ticket is available it forwards no identity and sets an `x-rail-status`
-reason. The fetch response is defined by
+With `RAIL_PLUGIN_ENABLED=true` the proxy fetches and refreshes its own ticket;
+if no valid ticket is available it forwards no identity and sets an
+`x-rail-status` reason. An `x-rail` header the agent supplies never crosses.
+
+The two forms differ in what else crosses. proxy-standalone makes every call to
+the upstream itself, so none of the agent's headers reach it. proxy-envoy-grpc
+changes the agent's own request, so the agent's other headers reach the
+upstream as sent; only its `x-rail` headers are removed, and only protected
+hosts get the ticket. The fetch response is defined by
 [`spec/ticket-fetch.schema.json`](spec/ticket-fetch.schema.json).
 
 The proxy and [DatRail Gateway](https://github.com/datrail/gateway) have
@@ -59,6 +71,7 @@ packages it runs:
 |---|---|---|
 | [proxy-core](proxy-core/README.md) | `proxy.core` | ticket lifecycle and byte-for-byte `x-rail` injection |
 | [proxy-standalone](proxy-standalone/README.md) | `proxy.standalone` | FastMCP host, process configuration and bridge file; its Dockerfile builds `ghcr.io/datrail/proxy` |
+| [proxy-envoy-grpc](proxy-envoy-grpc/README.md) | `proxy.envoy_grpc` | the service Envoy calls on each request, its settings and the reference Envoy config |
 
 Dependencies point one way: every interface imports the vendor-neutral core,
 and the core imports no interface. More generally, a package imports only the
@@ -67,7 +80,7 @@ packages its `pyproject.toml` declares, and
 
 A new interface is a `proxy-<name>/` package importing as `proxy.<name>`,
 with its own Dockerfile and image. Name it after its extension mechanism, not a
-cloud vendor (`proxy-ext-proc`, not `proxy-gcp`), so one implementation can
+cloud vendor (`proxy-envoy-grpc`, not `proxy-gcp`), so one implementation can
 serve every platform that speaks that mechanism.
 
 ## Security

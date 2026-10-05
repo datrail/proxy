@@ -354,6 +354,10 @@ def build_gateway(holder: TicketHolder | None) -> FastMCP:
         # agent sends crosses it.
         transport.forward_incoming_headers = False
 
+        # Always namespaced, even with one upstream: two upstreams each with a
+        # `search` tool would be indistinguishable without it, and namespacing
+        # only once a second entry appeared would rename every tool of the
+        # first. So there is no setting for bare tool names.
         gateway.mount(proxy, namespace=srv["name"])
         log.info("mounted '%s' -> %s", srv["name"], srv["url"])
 

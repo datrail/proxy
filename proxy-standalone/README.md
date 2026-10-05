@@ -24,15 +24,34 @@ arrive, not just that the container is healthy.
 
 ## Configuration
 
-- [`bridge.yaml.example`](bridge.yaml.example): the
-  upstream list, the one thing an environment variable cannot express. Each
-  upstream's tools are re-exposed as `<name>_<tool>`.
-- [`.env.example`](../.env.example) lists every environment variable, and the
-  bridge example describes each with its default. `RAIL_PROXY_CONFIG_FILE`
-  names the bridge file; the image reads `/app/standalone/bridge.yaml`.
+It reads the variables every interface shares: see
+[proxy-core's configuration](../proxy-core/README.md#configuration).
+[`.env.example`](../.env.example) lists every variable.
 
-The proxy listens on `0.0.0.0:8091` by default (`RAIL_PROXY_BIND`,
-`RAIL_PROXY_PORT`), and serves:
+#### `RAIL_PROXY_CONFIG_FILE`
+
+The bridge file: the upstream MCP servers, the one thing an environment
+variable can't express. Each upstream's tools are re-exposed as
+`<name>_<tool>`. Start from [`bridge.yaml.example`](bridge.yaml.example).
+
+Required: the proxy stops at startup without one. Defaults to
+`standalone/bridge.yaml`, relative to the working directory. The image sets
+it to `/app/standalone/bridge.yaml` and ships no file there, so mount one.
+
+#### `RAIL_PROXY_BIND`
+
+The interface to listen on. Defaults to `0.0.0.0`.
+
+#### `RAIL_PROXY_PORT`
+
+The port to listen on. Defaults to `8091`.
+
+#### `RAIL_PROXY_UPSTREAM_TIMEOUT_SECONDS`
+
+How long a call waits on an upstream before the agent is told it timed out.
+Defaults to `30`.
+
+## Endpoints
 
 - `POST /mcp`: the proxied MCP endpoint.
 - `GET /health`: liveness, `200` whether or not a ticket is held, with whether
