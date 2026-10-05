@@ -1,12 +1,6 @@
 """What every e2e driver asserts with: WireMock's request journal, the header
-matchers, `drive` and `expect`.
-
-The assertions are the journal, not log scraping: the question is what crossed
-the wire, and the journal is the only thing that answers it.
-
-Standard library only. A driver runs in a stock `python` image with this file
-mounted beside it, so nothing outside `e2e/` is needed to run a stack.
-"""
+matchers, `drive` and `expect`. Standard library only, so a stock `python`
+image runs it."""
 
 import json
 import re
@@ -14,28 +8,30 @@ import urllib.error
 import urllib.request
 
 UPSTREAM = "http://upstream:8080"
-ACCEPT = "application/json, text/event-stream"
 
 fails = 0
 
 
-# Every admin call raises on a non-2xx answer, and that is load-bearing rather
-# than tidy. The journal reset moved between WireMock majors — `POST
+# Every call raises on a non-2xx answer, and for the admin calls that is
+# load-bearing rather than tidy. The journal reset moved between WireMock majors — `POST
 # /__admin/requests/reset` is gone in 3.x, `DELETE /__admin/requests` replaced
 # it — and a 404 there that went unnoticed would leave the previous proxy's
 # traffic in the journal, so the next assertion counts headers that another
 # container attached and passes for the wrong reason. `urlopen` raises on it,
 # which stops the run.
-def _admin(method, path, body=None, base=UPSTREAM):
-    data = None if body is None else json.dumps(body).encode()
+def _request(method, url, body=None, headers=None):
     request = urllib.request.Request(
-        base + path,
-        data=data,
+        url,
+        data=None if body is None else json.dumps(body).encode(),
         method=method,
-        headers={"Content-Type": "application/json"},
+        headers={"Content-Type": "application/json", **(headers or {})},
     )
     with urllib.request.urlopen(request) as response:
-        text = response.read()
+        return response.read().decode()
+
+
+def _admin(method, path, body=None, base=UPSTREAM):
+    text = _request(method, base + path, body)
     return json.loads(text) if text else None
 
 
@@ -84,24 +80,30 @@ ANY_STATUS = present("x-rail-status")
 # Presence, not the forged value: the proxy attaches no `authorization` of its
 # own, so any at all upstream came from the caller.
 ANY_AUTH = present("authorization")
-FORGED_XRAIL = "forged-by-the-sandbox"
-FORGED = equal_to("x-rail", FORGED_XRAIL)
+FORGED = equal_to("x-rail", "forged-by-the-sandbox")
+
+# Every proxy is driven with both, not just the pass-through one. `authorization`
+# is driven for a reason the forged `x-rail` cannot cover: no injector writes
+# over it. A proxy holding a ticket sets `x-rail` whatever was forwarded, so with
+# forwarding back on the forged `x-rail` still never reaches the upstream, and
+# only the `authorization` assertion sees the breach.
+FORGED_HEADERS = {
+    "x-rail": "forged-by-the-sandbox",
+    "Authorization": "Bearer forged-by-the-sandbox",
+}
 
 
 def _post(url, payload, headers):
-    request = urllib.request.Request(
+    return _request(
+        "POST",
         url,
-        data=json.dumps(payload).encode(),
-        method="POST",
-        headers={"Accept": ACCEPT, "Content-Type": "application/json", **headers},
+        payload,
+        {"Accept": "application/json, text/event-stream", **headers},
     )
-    with urllib.request.urlopen(request) as response:
-        return response.read().decode()
 
 
-# The proxy is stateless — it issues no session id — so a call needs no
-# handshake state carried between requests. `initialize` is sent anyway
-# because that is what a real client does.
+# The proxy is stateless, so `initialize` carries nothing the call needs; it is
+# sent because a real client sends it.
 def drive(url, headers):
     """An MCP `initialize` and a `tools/call` at `url`, with `headers` added."""
     _post(
@@ -118,16 +120,10 @@ def drive(url, headers):
         },
         headers,
     )
-    # The tool call's body is read rather than discarded, and `"isError":false`
-    # is the leg that does the work. fastmcp does not hand the upstream's
-    # JSON-RPC error back as an error: it converts it into a *successful* result
-    # whose content carries `"isError":true`, so matching `"result"` alone
-    # passes on a call that failed outright while every header assertion still
-    # counts the POST that carried the failure. `delivery_track_package` is the
-    # mount name in the bridge file joined to the tool name the upstream lists,
-    # a coupling across three files: break any leg of it and this is what says
-    # so. The body is matched as text, not parsed, because the proxy may frame
-    # it as an SSE event rather than bare JSON.
+    # `"isError":false` is the leg that does the work: fastmcp turns the
+    # upstream's JSON-RPC error into a *successful* result carrying
+    # `"isError":true`, so matching `"result"` alone passes on a call that
+    # failed. Matched as text, because the proxy may frame it as an SSE event.
     try:
         body = _post(
             url,

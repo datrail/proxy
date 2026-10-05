@@ -5,7 +5,8 @@
 #
 #   docker compose -f e2e/standalone/compose.yml up --build --abort-on-container-exit --exit-code-from driver
 #
-# The exit code is the result.
+# The result is the driver container's exit code, which --exit-code-from makes
+# the exit code of `docker compose up`.
 
 name: datrail-proxy-e2e-standalone
 

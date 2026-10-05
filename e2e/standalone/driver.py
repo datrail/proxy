@@ -6,7 +6,7 @@ from lib import (
     ANY_STATUS,
     ANY_XRAIL,
     FORGED,
-    FORGED_XRAIL,
+    FORGED_HEADERS,
     count,
     drive,
     equal_to,
@@ -17,19 +17,6 @@ from lib import (
 )
 
 WITH_TICKET = equal_to("x-rail", "e2e-opaque-token")
-
-# Every proxy is driven with both, not just the pass-through one.
-#
-# `authorization` is the second header the boundary strips, named alongside
-# `x-rail` in the comment on `forward_incoming_headers`, and it is driven here
-# for a reason the forged `x-rail` cannot cover: no injector writes over it. On
-# the registered proxy the injector sets `x-rail` to the ticket regardless of
-# what was forwarded, so with forwarding back on the forged `x-rail` still never
-# reaches the upstream and only this assertion sees the breach.
-FORGED_HEADERS = {
-    "x-rail": FORGED_XRAIL,
-    "Authorization": "Bearer forged-by-the-sandbox",
-}
 
 
 def run(host):
