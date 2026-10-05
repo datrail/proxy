@@ -22,9 +22,3 @@ services:
     extends: {service: wiremock}
     volumes:
       - ./rc-mappings:/home/wiremock/mappings:ro
-    # Not UTC, so the `timezone='UTC'` on the `now` helper is load-bearing: the
-    # format's `Z` is a literal, and without the argument the ticket renders
-    # here four hours in the past, failing the registered proxy. On a UTC JVM
-    # dropping it would change nothing, and the suite would stay green.
-    environment:
-      TZ: Pacific/Honolulu
