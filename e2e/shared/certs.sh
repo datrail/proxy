@@ -15,7 +15,7 @@ openssl req -x509 -newkey rsa:2048 -nodes -days 2 -subj "/CN=rail e2e test CA" \
   -addext "basicConstraints=critical,CA:TRUE" -addext "keyUsage=critical,keyCertSign" \
   -keyout ca.key -out ca.crt 2>/dev/null
 
-for host in upstream.test evil.test; do
+for host in upstream.test upstream-agent-port.test upstream-443.test evil.test; do
   openssl req -newkey rsa:2048 -nodes -subj "/CN=$host" \
     -keyout "$host.key" -out "$host.csr" 2>/dev/null
   printf 'subjectAltName=DNS:%s\nextendedKeyUsage=serverAuth\n' "$host" > "$host.ext"

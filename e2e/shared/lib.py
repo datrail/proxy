@@ -154,6 +154,14 @@ def expect(what, want, got):
         _fail(f"{what} — got {got}, wanted {want}")
 
 
+def check(what, condition):
+    """An assertion that is true or false rather than a count."""
+    if condition:
+        print(f"  ok    {what}")
+    else:
+        _fail(what)
+
+
 def _fail(message):
     global fails
     fails += 1

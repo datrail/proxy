@@ -96,13 +96,31 @@ Envoy runs the reference config,
 [`proxy-envoy-grpc/envoy.yaml`](../proxy-envoy-grpc/envoy.yaml), with the test
 CA in place of the system bundle, and calls `ext` on a shared unix socket.
 
+Each Envoy runs the same reference config. They differ in the extension they
+call, and `envoy-misresolved` in where it resolves `upstream.test`.
+
 | Service | Configuration | What it should see |
 |---|---|---|
-| `upstream` | HTTPS on 8443 with a certificate for `upstream.test`; protected as `upstream.test:8443` | `x-rail: e2e-opaque-token`, over HTTPS |
-| `open` | plain HTTP on 8080, as `open.test`; not protected | no x-rail header at all |
-| `ext` | registered as `e2e-sandbox`; healthy once it holds the ticket | |
-| `envoy` | the reference config, in group 10001 to reach the socket | |
+| `envoy` + `ext` | registered | the ticket on every protected host, over the right scheme and port |
+| `envoy-unregistered` + `ext-unregistered` | a sandbox Rail Center doesn't know | `x-rail-status: not-found`, still over HTTPS |
+| `envoy-expired` + `ext-expired` | `e2e-expired` | `x-rail-status: expired` |
+| `envoy-issuer-down` + `ext-issuer-down` | `e2e-issuer-down` | `x-rail-status: issuer-unreachable` |
+| `envoy-passthrough` + `ext-passthrough` | the plugin off | neither header, still over HTTPS |
+| `envoy-misresolved` | calls `ext`, resolves `upstream.test` to `evil` | a 503: the certificate is for `evil.test` |
+| `envoy-no-ext` | a socket nothing serves on | forwarded with the x-rail headers removed and no status; a protected host isn't routed |
 | `image-user` | the extension's image, sleeping | nothing: its healthcheck asserts the uid |
+
+Every extension protects `upstream.test:8443`, `upstream-agent-port.test`,
+`upstream-443.test` and `http://upstream-plain.test`:
+
+| Server | Serves | Reached by |
+|---|---|---|
+| `upstream` | HTTPS on 8443 | `upstream.test` with no port, `:80`, `:8443` or `:9999`: the entry's port wins |
+| `upstream-agent-port` | HTTPS on 9443 | `upstream-agent-port.test:9443`: a bare entry keeps the agent's port |
+| `upstream-443` | HTTPS on 443 | `upstream-443.test` with no port or `:80`: HTTPS's default |
+| `upstream-plain` | HTTP on 8080 | `upstream-plain.test:8080`: an `http://` entry isn't upgraded |
+| `open` | HTTP on 8080 | `open.test:8080`: not protected, so left alone |
+| `evil` | HTTPS on 8443, certificate for `evil.test` only; `upstream.test` on `envoy-misresolved`'s network | only directly, as the driver's check that it serves TLS |
 
 Every request carries a forged `x-rail`, `x-rail-status` and `x-rail-foo`,
 which never cross, and the agent's own `x-trace` and `Authorization`, which
