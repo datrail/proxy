@@ -11,9 +11,7 @@ from collections.abc import Mapping
 
 from proxy.core.xrail_auth import redact_credentials
 
-# The name the standalone proxy has always logged under, kept so its output is
-# unchanged by the move; renaming it is a change of its own.
-log = logging.getLogger("fastmcp_proxy")
+log = logging.getLogger(__name__)
 
 _LOG_FORMAT = "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
 

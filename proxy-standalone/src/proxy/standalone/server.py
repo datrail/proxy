@@ -41,7 +41,7 @@ from proxy.core.xrail_auth import (
 
 # Relative to the working directory: /app/standalone/bridge.yaml in the image.
 DEFAULT_CONFIG_FILE = Path("standalone/bridge.yaml")
-log = logging.getLogger("fastmcp_proxy")
+log = logging.getLogger(__name__)
 
 
 def config_file() -> Path:

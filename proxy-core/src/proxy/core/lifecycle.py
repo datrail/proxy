@@ -13,9 +13,7 @@ from typing import Any
 from proxy.core.settings import build_ticket_source, refresh_seconds
 from proxy.core.xrail_auth import TicketHolder
 
-# The name the standalone proxy has always logged under, kept so its output is
-# unchanged by the move; renaming it is a change of its own.
-log = logging.getLogger("fastmcp_proxy")
+log = logging.getLogger(__name__)
 
 
 def build_holder() -> TicketHolder | None:

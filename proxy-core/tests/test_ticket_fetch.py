@@ -671,7 +671,7 @@ def test_a_plaintext_fetch_is_reported_even_with_no_credential_to_protect():
         def emit(self, record):
             records.append(record)
 
-    logger = logging.getLogger("fastmcp_proxy.xrail")
+    logger = logging.getLogger("proxy.core.xrail_auth")
     handler = _Collect()
     logger.addHandler(handler)
     try:
@@ -1005,7 +1005,7 @@ async def test_a_failure_message_is_truncated_before_it_is_logged():
         def emit(self, record):
             records.append(record)
 
-    logger = logging.getLogger("fastmcp_proxy")
+    logger = logging.getLogger("proxy")
     handler = _Collect()
     logger.addHandler(handler)
     try:
@@ -1817,7 +1817,7 @@ async def test_a_failure_after_a_success_does_not_claim_nothing_was_ever_fetched
         def emit(self, record):
             records.append(record)
 
-    logger = logging.getLogger("fastmcp_proxy.xrail")
+    logger = logging.getLogger("proxy.core.xrail_auth")
     handler = _Collect()
     logger.addHandler(handler)
     try:

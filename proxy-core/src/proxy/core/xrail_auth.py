@@ -31,7 +31,7 @@ from urllib.parse import urlencode, urlsplit, urlunsplit
 
 import httpx
 
-log = logging.getLogger("fastmcp_proxy.xrail")
+log = logging.getLogger(__name__)
 
 #: Largest ticket response this proxy will read. A named fetch answers with at
 #: most one ticket, so a body past this is not a big answer but a wrong one, and

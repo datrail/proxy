@@ -113,10 +113,10 @@ def test_a_log_line_carries_its_level_and_its_logger(monkeypatch, capsys):
 
     monkeypatch.setattr(logging.root, "handlers", [], raising=False)
     logs.configure_logging()
-    logging.getLogger("fastmcp_proxy").warning("a message")
+    logging.getLogger("proxy.core.logs").warning("a message")
 
     err = capsys.readouterr().err
-    assert "[WARNING] fastmcp_proxy: a message" in err
+    assert "[WARNING] proxy.core.logs: a message" in err
 
 
 def test_redaction_reaches_a_logger_that_never_propagates_to_root():
