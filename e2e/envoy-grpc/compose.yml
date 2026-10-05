@@ -1,0 +1,123 @@
+# The Envoy extension's e2e stack; e2e/README.md says what each service is for.
+#
+#   docker compose -f e2e/envoy-grpc/compose.yml up --build --abort-on-container-exit --exit-code-from driver
+#
+# The result is the driver container's exit code.
+
+name: datrail-proxy-e2e-envoy-grpc
+
+x-ext: &ext
+  build:
+    context: ../..
+    dockerfile: proxy-envoy-grpc/Dockerfile
+
+x-envoy: &envoy
+  image: envoyproxy/envoy:v1.39.2
+  environment:
+    # The image's entrypoint puts its `envoy` user in this group, which is the
+    # one the extension's socket is shared with.
+    ENVOY_GID: "10001"
+  healthcheck:
+    test: ["CMD", "bash", "-c", "</dev/tcp/127.0.0.1/15001"]
+    interval: 1s
+    timeout: 2s
+    retries: 30
+
+services:
+  certs:
+    extends: {file: ../shared/services.yml, service: certs}
+
+  rail-center:
+    extends: {file: ../shared/services.yml, service: rail-center}
+
+  # A protected MCP server, over HTTPS on 8443 with a certificate for
+  # upstream.test. Its journal is read over plain HTTP on 8080.
+  upstream:
+    extends: {file: ../shared/services.yml, service: wiremock}
+    command:
+      - --global-response-templating
+      - --https-port=8443
+      - --https-keystore=/certs/upstream.test.p12
+      - --keystore-type=PKCS12
+      - --keystore-password=password
+      - --key-manager-password=password
+    volumes:
+      - ../shared/mcp-mappings:/home/wiremock/mappings:ro
+      - certs:/certs:ro
+    networks:
+      default:
+        aliases: [upstream.test]
+    depends_on:
+      certs: {condition: service_healthy}
+
+  # An unprotected server, over plain HTTP.
+  open:
+    extends: {file: ../shared/services.yml, service: wiremock}
+    volumes:
+      - ../shared/mcp-mappings:/home/wiremock/mappings:ro
+    networks:
+      default:
+        aliases: [open.test]
+
+  # Registered, protecting upstream.test at 8443.
+  ext:
+    <<: *ext
+    environment:
+      RAIL_PLUGIN_ENABLED: "true"
+      RAIL_CENTER_URL: http://rail-center:8080
+      RAIL_HOST_ID: host-e2e
+      RAIL_SANDBOX_NAME: e2e-sandbox
+      RAIL_PROXY_PROTECTED_HOSTS: upstream.test:8443
+    volumes:
+      - ext-socket:/run/rail
+    healthcheck:
+      test: ["CMD", "python", "-m", "proxy.envoy_grpc.probe_health"]
+      interval: 1s
+      timeout: 5s
+      retries: 30
+    depends_on:
+      rail-center: {condition: service_healthy}
+
+  envoy:
+    <<: *envoy
+    volumes:
+      - ../../proxy-envoy-grpc/envoy.yaml:/etc/envoy/envoy.yaml:ro
+      - ext-socket:/run/rail
+      # The test CA in place of the system bundle the reference config trusts.
+      # nocopy: otherwise Docker fills the empty volume with the image's own
+      # /etc/ssl/certs before the certs service has written to it.
+      - type: volume
+        source: certs
+        target: /etc/ssl/certs
+        read_only: true
+        volume: {nocopy: true}
+    depends_on:
+      ext: {condition: service_healthy}
+      upstream: {condition: service_healthy}
+      open: {condition: service_healthy}
+
+  # Asserts the uid the extension's image runs as, as standalone's stack does.
+  image-user:
+    <<: *ext
+    command: ["sleep", "infinity"]
+    stop_grace_period: 0s
+    healthcheck:
+      test: ["CMD", "sh", "-c", "test \"$(id -u)\" = 10001"]
+      interval: 1s
+      timeout: 2s
+      retries: 3
+
+  driver:
+    image: python:3.12-slim
+    volumes:
+      - ./driver.py:/e2e/driver.py:ro
+      - ../shared/lib.py:/e2e/lib.py:ro
+    # Unbuffered, so each line shows as it is reached rather than at exit.
+    command: ["python", "-u", "/e2e/driver.py"]
+    depends_on:
+      envoy: {condition: service_healthy}
+      image-user: {condition: service_healthy}
+
+volumes:
+  certs:
+  ext-socket:

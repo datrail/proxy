@@ -100,7 +100,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        stack: [standalone]
+        stack: [standalone, envoy-grpc]
     steps:
       - uses: actions/checkout@v7
         with:

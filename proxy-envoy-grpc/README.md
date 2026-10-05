@@ -7,8 +7,9 @@ the [main README](../README.md) for the whole.
 Work in progress (DR-146): the server runs, with
 `python -m proxy.envoy_grpc`, and `python -m proxy.envoy_grpc.probe_health`
 probes it over the same socket. The image is built from
-[`Dockerfile`](Dockerfile), from the repository root. There is no Envoy config
-yet.
+[`Dockerfile`](Dockerfile), from the repository root.
+[`envoy.yaml`](envoy.yaml) is the reference Envoy config, and the
+e2e stack runs it.
 
 ## How it works
 

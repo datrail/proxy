@@ -48,11 +48,14 @@ def unmatched(base=UPSTREAM):
     return len(_admin("GET", "/__admin/requests/unmatched", base=base)["requests"])
 
 
-def posts(headers=None):
-    """A journal pattern: POSTs to /mcp, carrying `headers` if given."""
+def posts(headers=None, scheme=None):
+    """A journal pattern: POSTs to /mcp, carrying `headers` and arriving over
+    `scheme` (`http` or `https`) if given."""
     pattern = {"method": "POST", "url": "/mcp"}
     if headers:
         pattern["headers"] = headers
+    if scheme:
+        pattern["scheme"] = scheme
     return pattern
 
 
@@ -97,8 +100,10 @@ def _post(url, payload, headers):
 
 # The proxy is stateless, so `initialize` carries nothing the call needs; it is
 # sent because a real client sends it.
-def drive(url, headers):
-    """An MCP `initialize` and a `tools/call` at `url`, with `headers` added."""
+def drive(url, headers, tool="delivery_track_package"):
+    """An MCP `initialize` and a `tools/call` of `tool` at `url`, with `headers`
+    added. The default is the tool as standalone exposes it: the upstream's
+    `track_package`, under the name its bridge file mounts it as."""
     _post(
         url,
         {
@@ -125,7 +130,7 @@ def drive(url, headers):
                 "id": 2,
                 "method": "tools/call",
                 "params": {
-                    "name": "delivery_track_package",
+                    "name": tool,
                     "arguments": {"id": "pkg-1"},
                 },
             },
