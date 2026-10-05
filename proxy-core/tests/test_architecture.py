@@ -39,7 +39,11 @@ def _allowed(member: Path) -> set[str]:
 def test_every_member_is_found():
     # Without this, a glob that stopped matching would leave the test below
     # with nothing to check, and it would pass.
-    assert {m.name for m in MEMBERS} >= {"proxy-core", "proxy-standalone"}
+    assert {m.name for m in MEMBERS} >= {
+        "proxy-core",
+        "proxy-standalone",
+        "proxy-envoy-grpc",
+    }
 
 
 @pytest.mark.parametrize("member", MEMBERS, ids=lambda m: m.name)

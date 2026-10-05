@@ -3,7 +3,7 @@
 name = "datrail-proxy"
 version = "0"
 requires-python = ">=3.12"
-dependencies = ["proxy-core", "proxy-standalone"]
+dependencies = ["proxy-core", "proxy-standalone", "proxy-envoy-grpc"]
 
 [tool.uv.workspace]
 members = ["proxy-*"]
@@ -11,6 +11,7 @@ members = ["proxy-*"]
 [tool.uv.sources]
 proxy-core = { workspace = true }
 proxy-standalone = { workspace = true }
+proxy-envoy-grpc = { workspace = true }
 
 # Dev tools; never in an image (Dockerfiles sync with `--no-dev`).
 [dependency-groups]
