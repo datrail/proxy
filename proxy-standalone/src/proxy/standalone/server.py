@@ -31,7 +31,7 @@ from fastmcp.server import create_proxy
 from starlette.responses import JSONResponse
 from starlette.types import ASGIApp, Receive, Scope, Send
 
-from core.xrail_auth import (
+from proxy.core.xrail_auth import (
     TicketHolder,
     TicketSource,
     XRailInjector,
@@ -39,7 +39,8 @@ from core.xrail_auth import (
     redact_credentials,
 )
 
-DEFAULT_CONFIG_FILE = Path(__file__).resolve().parent / "bridge.yaml"
+# Relative to the working directory: /app/standalone/bridge.yaml in the image.
+DEFAULT_CONFIG_FILE = Path("standalone/bridge.yaml")
 _LOG_FORMAT = "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
 log = logging.getLogger("fastmcp_proxy")
 
@@ -605,7 +606,7 @@ class RedactingFilter(logging.Filter):
     def filter(self, record: logging.LogRecord) -> bool:
         try:
             self._redact_record(record)
-        except Exception:
+        except Exception:  # noqa: BLE001 - a log filter must never raise
             record.msg = "a log record could not be redacted and was withheld"
             record.args = ()
             record.exc_info = None

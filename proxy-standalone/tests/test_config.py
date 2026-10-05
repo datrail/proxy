@@ -14,8 +14,8 @@ import sys
 
 import pytest
 
-from core.xrail_auth import token_fingerprint
-from standalone import server as proxy_module
+from proxy.core.xrail_auth import token_fingerprint
+from proxy.standalone import server as proxy_module
 
 
 async def _hold(source):
@@ -43,7 +43,7 @@ def test_a_missing_config_file_is_reported_by_path(write_config, monkeypatch, tm
 @pytest.mark.parametrize(
     "value", ["", "   ", "\t\n"], ids=["empty", "spaces", "whitespace"]
 )
-def test_a_blank_config_path_falls_back_to_the_packaged_default(monkeypatch, value):
+def test_a_blank_config_path_falls_back_to_the_default(monkeypatch, value):
     """An unset compose interpolation yields an empty string, and `Path("")` is
     the current directory — which exists, so a naive check passes and the read
     fails on a directory instead of reporting a missing config. Whitespace is
@@ -52,9 +52,8 @@ def test_a_blank_config_path_falls_back_to_the_packaged_default(monkeypatch, val
 
     # Compared against the path itself rather than against the constant the
     # function returns, which would hold however the constant was defined.
-    assert proxy_module.config_file() == (
-        pathlib.Path(proxy_module.__file__).parent / "bridge.yaml"
-    )
+    # Relative, so the image's WORKDIR makes it /app/standalone/bridge.yaml.
+    assert proxy_module.config_file() == pathlib.Path("standalone/bridge.yaml")
 
 
 def test_a_config_that_is_not_utf_8_is_reported_rather_than_raised(
@@ -636,7 +635,10 @@ async def test_a_startup_fetch_reports_a_fingerprint_and_never_the_ticket(
     import httpx
 
     body = json.loads(
-        (_pathlib.Path(__file__).parent / "fixtures" / "tickets.json").read_text()
+        (
+            _pathlib.Path(__file__).resolve().parents[2]
+            / "proxy-core/tests/fixtures/tickets.json"
+        ).read_text()
     )
     # The holder reads the wall clock, and the fixture names a fixed instant.
     # Left alone this lands on the already-expired branch, and the one whose
@@ -840,7 +842,7 @@ async def test_an_expired_ticket_is_not_reported_as_held(monkeypatch, caplog):
     in the one log line this fetch exists to produce."""
     import httpx
 
-    from core.xrail_auth import TicketSource
+    from proxy.core.xrail_auth import TicketSource
 
     source = TicketSource(
         "https://rc.invalid",
@@ -1033,14 +1035,13 @@ async def test_a_failure_with_no_message_is_named_by_its_type(caplog):
     """`asyncio.TimeoutError` renders as the empty string, and a fetch bounded
     by a deadline is exactly where one arrives. Interpolated blindly, the line
     reads `ticket refresh failed ()`."""
-    import asyncio
 
     class _Source:
         def describe(self):
             return "https://rc.invalid (unauthenticated)"
 
         async def fetch(self):
-            raise asyncio.TimeoutError
+            raise TimeoutError
 
     with caplog.at_level("WARNING"):
         await _hold(_Source())
@@ -2004,9 +2005,9 @@ def test_the_version_is_settled_before_the_upstreams_are_parsed(write_config):
 #: The config files this repository ships, each of which some instruction tells
 #: someone to run: the README's quick start copies the example and mounts it,
 #: and the e2e stack mounts its own.
-_REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
+_REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
 SHIPPED_CONFIGS = (
-    _REPO_ROOT / "standalone" / "bridge.yaml.example",
+    _REPO_ROOT / "proxy-standalone/bridge.yaml.example",
     _REPO_ROOT / "e2e" / "bridge.yaml",
 )
 
@@ -2030,3 +2031,15 @@ def test_a_config_this_repository_ships_is_one_this_proxy_reads(
 
     assert [s["name"] for s in servers]
     assert not [r for r in caplog.records if "schema_version" in r.getMessage()]
+
+
+def test_an_upstream_password_with_no_username_is_a_credential_too():
+    """`urlsplit("https://:s3cret@h/").username` is the empty string, so a guard
+    reading only the username lets the one-part form past."""
+    from urllib.parse import urlsplit as _split
+
+    parts = _split("https://:s3cret@gateway.invalid/mcp")
+    assert not parts.username
+    assert parts.password
+    assert bool(parts.username or parts.password)
+    assert proxy_module._in_the_clear("http://gateway.invalid/mcp") is True
