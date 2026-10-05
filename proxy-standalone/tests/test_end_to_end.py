@@ -18,7 +18,7 @@ import pytest
 from fastmcp import Client
 from fastmcp.client.transports import StreamableHttpTransport
 
-from core_support import EXPECTED_OUTBOUND, XRAIL_CASES, wound_holder
+from core_support import EXPECTED_OUTBOUND, wound_holder, xrail_params
 from proxy.core import settings as core_settings
 from proxy.standalone import server as proxy_module
 from proxy.standalone.server import McpMethodCompat
@@ -392,7 +392,7 @@ async def _forward_one_call(holder, agent_headers=None) -> list[dict[str, str]]:
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("case", XRAIL_CASES, ids=lambda case: case.name)
+@pytest.mark.parametrize("case", xrail_params("standalone"))
 async def test_what_reaches_the_upstream_is_the_x_rail_contract(config, upstream, case):
     """Each row of the shared table, on the wire. The table is lifted from what
     this proxy does, so this is the reference every other interface is held to.
@@ -401,7 +401,7 @@ async def test_what_reaches_the_upstream_is_the_x_rail_contract(config, upstream
     forwarding, so without the switch being turned back off an agent sets
     `x-rail` itself and the upstream receives it unchanged — an identity
     supplied by the caller it identifies. `authorization` is forwarded by the
-    same path. The forged row is that case.
+    same path. The forged rows are that case, in every holder state.
     """
     arrived = await _forward_one_call(case.holder(), case.agent_headers)
 

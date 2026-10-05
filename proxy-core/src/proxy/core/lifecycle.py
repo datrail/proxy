@@ -1,7 +1,8 @@
 """The holder's life in a process: built from the settings, run, reported.
 
-Building the holder from the settings, running it for the life of the
-process, and reporting its state on a health check.
+Every interface starts and stops its holder the same way and reports the same
+health. Only whether startup waits for the first fetch differs between them, so
+that is the one parameter.
 """
 
 from __future__ import annotations
@@ -32,10 +33,13 @@ def build_holder() -> TicketHolder | None:
 
 
 @asynccontextmanager
-async def running(holder: TicketHolder | None) -> AsyncIterator[TicketHolder | None]:
+async def running(
+    holder: TicketHolder | None, *, wait_for_first_fetch: bool
+) -> AsyncIterator[TicketHolder | None]:
     """Run `holder` for the life of the block, and always close it after.
 
-    The block is entered once the first fetch has an outcome (see
+    With `wait_for_first_fetch` the block is entered once the first fetch has
+    an outcome; without it, at once, with the fetch under way (see
     `TicketHolder.start`).
 
     A None holder is announced rather than run: attaching nothing is a supported
@@ -54,7 +58,7 @@ async def running(holder: TicketHolder | None) -> AsyncIterator[TicketHolder | N
         yield None
         return
     try:
-        await holder.start()
+        await holder.start(wait_for_first_fetch=wait_for_first_fetch)
         yield holder
     finally:
         await holder.aclose()

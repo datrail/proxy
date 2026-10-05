@@ -482,7 +482,7 @@ async def main() -> int:
     # Awaited, so a wrong sandbox name or a rejected credential shows up while
     # an operator is watching. Never fatal, and the wait is bounded by
     # RAIL_PROXY_TICKET_TIMEOUT_SECONDS — the port is not open until it returns.
-    async with running(holder):
+    async with running(holder, wait_for_first_fetch=True):
         # uvicorn logs the bind once it has one. Announcing it here would name an
         # address the process may never get.
         # uvicorn installs its own loggers, so `basicConfig` alone leaves the access
