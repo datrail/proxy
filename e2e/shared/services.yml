@@ -6,8 +6,9 @@
 services:
   wiremock:
     image: wiremock/wiremock:3.9.1
-    # Response templating keeps expires_at ahead of now, so the fixture does not
-    # rot the way a hardcoded stamp would.
+    # Response templating keeps expires_at ahead of now (or, for the expired
+    # sandbox, behind it), so the fixtures don't rot the way a hardcoded stamp
+    # would.
     command: ["--global-response-templating"]
     healthcheck:
       test: ["CMD", "curl", "-sf", "http://localhost:8080/__admin/health"]
@@ -15,9 +16,10 @@ services:
       timeout: 3s
       retries: 15
 
-  # Stands in for Rail Center. Query-parameter matching gives both ticket cases
-  # with no code: e2e-sandbox gets a ticket, anything else gets an empty list —
-  # which is authoritative, not an error.
+  # Stands in for Rail Center. Query-parameter matching gives every ticket case
+  # with no code: e2e-sandbox gets a ticket, e2e-expired one that has lapsed,
+  # e2e-issuer-down a 500, and anything else an empty list — which is
+  # authoritative, not an error.
   rail-center:
     extends: {service: wiremock}
     volumes:

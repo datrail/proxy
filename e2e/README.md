@@ -55,10 +55,12 @@ Matched on `sandbox_name`, so every state is configuration, not code:
 | `sandbox_name` | Rail Center answers | The proxy reports |
 |---|---|---|
 | `e2e-sandbox` | a ticket, `e2e-opaque-token`, six hours from expiry | `x-rail: e2e-opaque-token` |
+| `e2e-expired` | a ticket whose `expires_at` was an hour ago | `x-rail-status: expired` |
+| `e2e-issuer-down` | a 500 | `x-rail-status: issuer-unreachable` |
 | anything else | an empty list — authoritative, not an error | `x-rail-status: not-found` |
 
 `--global-response-templating` is what keeps `expires_at` six hours ahead of
-now. A hardcoded stamp would pass today
+now (or one behind it, for `e2e-expired`). A hardcoded stamp would pass today
 and fail silently on whatever day it went past. The helper carries
 `timezone='UTC'` for a second reason: the `Z` in its format string is a literal
 rather than an offset, so without it the stamp renders in the container's local
@@ -114,6 +116,8 @@ docker compose -f e2e/standalone/compose.yml up --build --abort-on-container-exi
 |---|---|---|
 | `proxy` | registered as `e2e-sandbox` | `x-rail: e2e-opaque-token` |
 | `proxy-unregistered` | a sandbox name Rail Center does not know | `x-rail-status: not-found`, no identity |
+| `proxy-expired` | `e2e-expired`: the only ticket has lapsed | `x-rail-status: expired`, no identity |
+| `proxy-issuer-down` | `e2e-issuer-down`: Rail Center answers 500 | `x-rail-status: issuer-unreachable`, no identity |
 | `proxy-passthrough` | no RailXia configuration at all | neither header |
 | `image-user` | the same image, sleeping | nothing: its healthcheck asserts the uid, and the driver waits on it |
 

@@ -60,6 +60,25 @@ services:
       RAIL_SANDBOX_NAME: not-a-registered-sandbox
     depends_on: *attached-depends
 
+  # Expired: Rail Center answers with a ticket whose expires_at has passed. The
+  # proxy holds it and still never sends it.
+  proxy-expired:
+    <<: *proxy
+    environment:
+      <<: *attached
+      RAIL_SANDBOX_NAME: e2e-expired
+    depends_on: *attached-depends
+
+  # Issuer down: Rail Center answers this sandbox with a 500, so no answer has
+  # ever landed. Its healthcheck passing is part of the point: a proxy whose
+  # issuer is down still starts, and fails closed.
+  proxy-issuer-down:
+    <<: *proxy
+    environment:
+      <<: *attached
+      RAIL_SANDBOX_NAME: e2e-issuer-down
+    depends_on: *attached-depends
+
   # No control plane at all. Neither header is attached — which is not the
   # fail-closed path, and the difference is the point of running both.
   #
@@ -108,5 +127,7 @@ services:
     depends_on:
       proxy: {condition: service_healthy}
       proxy-unregistered: {condition: service_healthy}
+      proxy-expired: {condition: service_healthy}
+      proxy-issuer-down: {condition: service_healthy}
       proxy-passthrough: {condition: service_healthy}
       image-user: {condition: service_healthy}

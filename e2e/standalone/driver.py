@@ -64,6 +64,14 @@ print("unregistered proxy — Rail Center holds no ticket for it")
 run("proxy-unregistered")
 fails_closed_with("not-found")
 
+print("expired proxy — the only ticket Rail Center has for it has lapsed")
+run("proxy-expired")
+fails_closed_with("expired")
+
+print("issuer-down proxy — Rail Center answers it with a 500")
+run("proxy-issuer-down")
+fails_closed_with("issuer-unreachable")
+
 print("pass-through proxy — no control plane configured")
 run("proxy-passthrough")
 expect("the call is still forwarded", "some", count(ANY_POST))

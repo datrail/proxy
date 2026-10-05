@@ -1,0 +1,8 @@
+{
+  "priority": 1,
+  "request": {
+    "method": "GET", "urlPath": "/v1/tickets",
+    "queryParameters": {"sandbox_name": {"equalTo": "e2e-issuer-down"}}
+  },
+  "response": {"status": 500, "body": "e2e: Rail Center is down for this sandbox"}
+}
