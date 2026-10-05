@@ -119,8 +119,9 @@ def _naming_a_rail_center() -> list[str]:
     """Every variable set on this proxy that names an intent to attach.
 
     One list, read both by the cross-check in `build_ticket_source` that
-    refuses a Rail Center configured beside an off flag, and by the advice in
-    `build_gateway` that tells an operator what a plain proxy has to shed.
+    refuses a Rail Center configured beside an off flag, and by the advice that
+    tells an operator what a plain proxy has to shed — in `build_ticket_source`
+    when the Rail Center is incomplete, and in `refuse_a_credential_in_the_url`.
     Advice derived from a second list stops being true the moment either grows.
     """
     _, named, _ = _naming_variables()
@@ -311,11 +312,12 @@ def ticket_timeout() -> float:
     """Seconds to wait on Rail Center for this proxy's own ticket.
 
     Its own setting rather than the upstream one, because the wait falls in a
-    different place: the startup fetch runs before the listener is bound, so
-    this value is how long a Rail Center that does not answer delays the port
-    and `/health`. Sharing the upstream's value would mean raising that for a
-    slow tool server also lengthened a container's time to first health check,
-    which is how a startup delay becomes a crash loop.
+    different place: where an interface starts its holder with
+    `wait_for_first_fetch` (standalone does), the startup fetch runs before the
+    listener is bound, so this value is how long a Rail Center that does not
+    answer delays the port and `/health`. Sharing the upstream's value would
+    mean raising that for a slow tool server also lengthened a container's time
+    to first health check, which is how a startup delay becomes a crash loop.
     """
     return seconds_setting("RAIL_PROXY_TICKET_TIMEOUT_SECONDS", 10.0)
 

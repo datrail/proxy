@@ -14,7 +14,7 @@ The wire contract is pinned in `spec/ticket-fetch.schema.json`, and
 
 `redact_credentials` lives here too, because what it recognises is a credential
 inside a URL — the same thing `_parse_base` and `describe` are careful about.
-`proxy.standalone.server.RedactingFilter` is what installs it on every handler.
+`proxy.core.logs.RedactingFilter` is what applies it on every handler.
 """
 
 from __future__ import annotations

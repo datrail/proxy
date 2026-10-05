@@ -512,7 +512,7 @@ def test_a_configured_issuer_that_will_never_be_asked_is_a_config_error(monkeypa
     assert "was not meant" in str(info.value)
     # Both remedies, because the diagnosis alone leaves an operator holding a
     # container that is down and a choice about which half they meant. This is
-    # also where `build_gateway`'s credential-in-url refusal sends them, so it
+    # also where `refuse_a_credential_in_the_url` sends them, so it
     # is the advice that has to survive.
     assert "Set RAIL_PLUGIN_ENABLED=true to attach" in str(info.value)
     assert "unset them to forward without a ticket" in str(info.value)
