@@ -92,7 +92,7 @@ jobs:
     needs: [version, ci]
     runs-on: ubuntu-26.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ needs.version.outputs.tag }}
 
@@ -103,17 +103,17 @@ jobs:
       - id: commit
         run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
-      - uses: docker/setup-qemu-action@v3
-      - uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-qemu-action@v4
+      - uses: docker/setup-buildx-action@v4
 
-      - uses: docker/login-action@v3
+      - uses: docker/login-action@v4
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - id: meta
-        uses: docker/metadata-action@v5
+        uses: docker/metadata-action@v6
         with:
           images: ghcr.io/${{ github.repository }}
           # `value=` pins every tag to the version resolved above, so a manual
@@ -127,7 +127,7 @@ jobs:
             org.opencontainers.image.revision=${{ steps.commit.outputs.sha }}
 
       - id: build
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           file: proxy-standalone/Dockerfile
@@ -164,11 +164,15 @@ jobs:
       # the built commit instead.
       - id: attest
         continue-on-error: true
-        uses: actions/attest-build-provenance@v2
+        uses: actions/attest-build-provenance@v4
         with:
           subject-name: ghcr.io/${{ github.repository }}
           subject-digest: ${{ steps.build.outputs.digest }}
           push-to-registry: true
+          # v4 would also write an artifact-metadata storage record, which
+          # needs `artifact-metadata: write` and only logs a warning without
+          # it. Off, as in v2: the attestation is what verification reads.
+          create-storage-record: false
 
       - if: steps.attest.outcome == 'failure'
         run: echo "::warning::Image published without a provenance attestation — attestations need a public repository, or GitHub Enterprise Cloud."
