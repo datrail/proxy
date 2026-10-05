@@ -12,13 +12,6 @@ UPSTREAM = "http://upstream:8080"
 fails = 0
 
 
-# Every call raises on a non-2xx answer, and for the admin calls that is
-# load-bearing rather than tidy. The journal reset moved between WireMock majors — `POST
-# /__admin/requests/reset` is gone in 3.x, `DELETE /__admin/requests` replaced
-# it — and a 404 there that went unnoticed would leave the previous proxy's
-# traffic in the journal, so the next assertion counts headers that another
-# container attached and passes for the wrong reason. `urlopen` raises on it,
-# which stops the run.
 def _request(method, url, body=None, headers=None):
     request = urllib.request.Request(
         url,
