@@ -22,7 +22,7 @@ from core_support import wound_holder, xrail_params
 from proxy.core import lifecycle
 from proxy.core.settings import ConfigError
 from proxy.core.xrail_auth import TicketHolder, Token
-from proxy.envoy_grpc import health, server
+from proxy.envoy_grpc import probe_health, server
 from proxy.envoy_grpc import settings as envoy_settings
 
 _ORDINARY = {
@@ -210,6 +210,17 @@ async def test_a_stale_socket_file_is_replaced(monkeypatch, socket_path):
 
 
 @pytest.mark.asyncio
+async def test_the_socket_is_for_its_user_and_group_only(monkeypatch, socket_path):
+    srv = await server._start_server(None, False, _protected(monkeypatch), socket_path)
+    try:
+        mode = socket_path.stat().st_mode & 0o777
+    finally:
+        await srv.stop(None)
+
+    assert mode == 0o660
+
+
+@pytest.mark.asyncio
 async def test_a_file_that_is_not_a_socket_is_left_alone(monkeypatch, socket_path):
     socket_path.write_text("not ours")
 
@@ -255,7 +266,7 @@ async def test_the_status_method(monkeypatch, socket_path, holder, ticket):
         async with grpc.aio.insecure_channel(f"unix:{socket_path}") as channel:
             raw = await channel.unary_unary(server.STATUS_METHOD)(b"")
         monkeypatch.setenv("RAIL_PROXY_EXT_SOCKET", str(socket_path))
-        probe = await asyncio.to_thread(health.main)
+        probe = await asyncio.to_thread(probe_health.main)
     finally:
         await srv.stop(None)
 
@@ -270,7 +281,7 @@ async def test_the_status_method(monkeypatch, socket_path, holder, ticket):
 def test_the_probe_exits_1_with_no_server(monkeypatch, socket_path, capsys):
     monkeypatch.setenv("RAIL_PROXY_EXT_SOCKET", str(socket_path))
 
-    assert health.main() == 1
+    assert probe_health.main() == 1
     assert "no answer" in capsys.readouterr().err
 
 
@@ -296,7 +307,7 @@ def test_sigterm_stops_the_process_cleanly(socket_path):
         "RAIL_PROXY_EXT_SOCKET": str(socket_path),
     }
     process = subprocess.Popen(
-        [sys.executable, "-m", "proxy.envoy_grpc.server"],
+        [sys.executable, "-m", "proxy.envoy_grpc"],
         env=env,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
@@ -316,7 +327,8 @@ def test_sigterm_stops_the_process_cleanly(socket_path):
     output = process.stdout.read()
     assert code == 0, output
     assert "Traceback" not in output
-    assert "stopping" in output
+    assert "proxy.envoy_grpc.server: stopping" in output
+    assert "__main__" not in output
 
 
 def test_the_process_binds_before_the_first_fetch(socket_path):
@@ -336,7 +348,7 @@ def test_the_process_binds_before_the_first_fetch(socket_path):
         "RAIL_PROXY_PROTECTED_HOSTS": "mcp.example.com",
     }
     process = subprocess.Popen(
-        [sys.executable, "-m", "proxy.envoy_grpc.server"],
+        [sys.executable, "-m", "proxy.envoy_grpc"],
         env=env,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
@@ -349,7 +361,7 @@ def test_the_process_binds_before_the_first_fetch(socket_path):
             assert time.monotonic() < deadline, "the socket waited for the fetch"
             time.sleep(0.05)
         probe = subprocess.run(
-            [sys.executable, "-m", "proxy.envoy_grpc.health"],
+            [sys.executable, "-m", "proxy.envoy_grpc.probe_health"],
             env=env,
             capture_output=True,
             text=True,

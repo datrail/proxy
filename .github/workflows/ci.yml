@@ -61,6 +61,16 @@ jobs:
   # pushes anything, so this job runs on both paths.
   image:
     runs-on: ubuntu-26.04
+    # One entry per image. Each cache scope is shared with container-release.yml:
+    # keep the names in step.
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - dockerfile: proxy-standalone/Dockerfile
+            scope: image-standalone
+          - dockerfile: proxy-envoy-grpc/Dockerfile
+            scope: image-envoy-grpc
     steps:
       - uses: actions/checkout@v7
         with:
@@ -69,14 +79,14 @@ jobs:
 
       # Build-only, amd64 only: arm64 would answer "does it build" no differently.
       # Context is the repo root, for uv.lock; Dockerfile.dockerignore limits what
-      # is sent. Scope shared with container-release.yml: keep the names in step.
+      # is sent.
       - uses: docker/build-push-action@v7
         with:
           context: .
-          file: proxy-standalone/Dockerfile
+          file: ${{ matrix.dockerfile }}
           push: false
-          cache-from: type=gha,scope=image-standalone
-          cache-to: type=gha,mode=max,scope=image-standalone
+          cache-from: type=gha,scope=${{ matrix.scope }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.scope }}
 
   # The only job that runs the image rather than building it: each stack in e2e/
   # brings up a proxy against a stubbed control plane and a stubbed upstream

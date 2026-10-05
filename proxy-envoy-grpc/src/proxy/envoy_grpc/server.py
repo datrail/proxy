@@ -14,7 +14,6 @@ import asyncio
 import json
 import logging
 import signal
-import sys
 import traceback
 from collections.abc import Mapping
 from pathlib import Path
@@ -134,6 +133,9 @@ async def _start_server(
         server.add_insecure_port(f"unix:{socket_path}")
     except RuntimeError as exc:
         raise ConfigError(f"RAIL_PROXY_EXT_SOCKET: cannot bind {socket_path}") from exc
+    # Connecting needs write permission on the socket, so Envoy can connect if
+    # it runs as this user or in its group, and nothing else can.
+    socket_path.chmod(0o660)
     await server.start()
     log.info("serving Envoy's checks on %s", socket_path)
     return server
@@ -186,7 +188,3 @@ def main() -> int:
         log.error("%s", exc)
         return 2
     return asyncio.run(_run(holder, enabled, hosts, socket_path))
-
-
-if __name__ == "__main__":
-    sys.exit(main())

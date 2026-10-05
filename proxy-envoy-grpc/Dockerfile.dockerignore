@@ -1,0 +1,13 @@
+# Used instead of a root .dockerignore when building with
+# -f proxy-envoy-grpc/Dockerfile. Send only what this image needs: another
+# member's changes never touch its cache.
+**
+!LICENSE
+!NOTICE
+!pyproject.toml
+!uv.lock
+!proxy-core/pyproject.toml
+!proxy-core/src/**
+!proxy-envoy-grpc/pyproject.toml
+!proxy-envoy-grpc/src/**
+**/__pycache__
