@@ -21,17 +21,37 @@ flowchart LR
 ```
 
 The agent speaks MCP to the proxy, and the proxy's own MCP clients make every
-call upstream. Nothing of the agent's request crosses but the call itself:
+call upstream, carrying the agent's headers as
+[proxy-envoy-grpc](../proxy-envoy-grpc/README.md) does:
 
-- **None of the agent's headers** reach an upstream, `x-rail` and
-  `Authorization` included. What arrives is the client's own headers, plus
-  `x-rail` with the ticket, or `x-rail-status` with the reason there is none,
-  or neither when the plugin is off.
+- **The agent's own headers** cross on every upstream request its call
+  causes, `Authorization` included. None in the x-rail namespace (`x-rail`,
+  `x-rail-*`) ever does, nor any with `_` in its name, nor those about the
+  agent's own connection to the proxy (`mcp-*`, `last-event-id`,
+  `accept-encoding`). The proxy adds `x-rail` with the ticket, or
+  `x-rail-status` with the reason there is none, or neither when the plugin is
+  off.
 - **Only the bridge file's upstreams** get the ticket. Redirects are not
   followed, and no ambient proxy setting is read.
 - **Startup waits for the first fetch**, bounded by
   `RAIL_PROXY_TICKET_TIMEOUT_SECONDS`, before the port is bound. A failed fetch
   doesn't stop it: calls then carry `x-rail-status`.
+
+### Where it still differs from the Envoy form
+
+Because it makes the upstream calls itself:
+
+- **One agent call can be several upstream requests**, each with the agent's
+  headers: an MCP handshake (`initialize`, `notifications/initialized`), a
+  `GET` stream, the call, and a `DELETE` closing the session.
+- **The transport's headers are the proxy client's own**: `host`, `accept`,
+  `content-type`, `content-length`, `mcp-session-id`, `mcp-protocol-version`,
+  `connection` and `accept-encoding`.
+- **A header the agent repeats** reaches the upstream once, with its last
+  value.
+- **The upstream's response headers** don't reach the agent: the proxy
+  answers in its own MCP session.
+- **No `X-Forwarded-Proto`**, which Envoy adds on its own.
 
 ## Run
 

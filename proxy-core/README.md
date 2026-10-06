@@ -21,6 +21,9 @@ and health. It imports no other member of this workspace; every interface,
 - `XRailInjector` puts that on every request an httpx client sends, as
   proxy-standalone's does; proxy-envoy-grpc hands it to Envoy instead. Either
   way a rotation is picked up without a restart.
+- `agent_header_may_cross` is the rule every interface applies to the agent's
+  own headers: none in the x-rail namespace (`is_xrail_header`), and none with
+  `_` in the name, which many servers read as `-`.
 
 **The ticket is opaque.** What is inside it is the gateway's contract, and
 nothing here looks: expiry comes from `expires_at` alone, and an entry without

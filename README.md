@@ -45,8 +45,8 @@ forwards no identity and sets an `x-rail-status` reason. An `x-rail` header
 the agent supplies never crosses. The fetch response is defined by
 [`spec/ticket-fetch.schema.json`](spec/ticket-fetch.schema.json).
 
-The two forms put the proxy in that path differently, and differ in what else
-of the agent's request crosses: see
+Both forms forward the agent's own headers beside the ticket, but put the proxy
+in that path differently: see
 [proxy-standalone's](proxy-standalone/README.md#architecture) and
 [proxy-envoy-grpc's](proxy-envoy-grpc/README.md#architecture) architecture.
 
