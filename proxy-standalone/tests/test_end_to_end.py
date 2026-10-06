@@ -563,6 +563,38 @@ async def test_the_upstream_client_is_the_one_the_proxy_builds():
 
 
 @pytest.mark.asyncio
+async def test_the_upstream_client_forwards_only_what_may_cross():
+    """The agent's headers as fastmcp hands them over: its own cross, and the
+    x-rail ones, those with `_`, and this hop's own never do."""
+    agent = {
+        "authorization": "Bearer agent-own",
+        "user-agent": "agent-ua",
+        "x-trace": "t1",
+        "x-rail": "forged",
+        "x-rail-status": "forged",
+        "X-Rail-Foo": "forged",
+        "x_rail": "forged",
+        "accept-encoding": "br, zstd",
+        "last-event-id": "7",
+        "mcp-protocol-version": "2025-06-18",
+    }
+    client = proxy_module.upstream_client(headers=agent)
+    try:
+        sent = {k.lower(): v for k, v in client.headers.items()}
+    finally:
+        await client.aclose()
+
+    assert sent["authorization"] == "Bearer agent-own"
+    assert sent["user-agent"] == "agent-ua"
+    assert sent["x-trace"] == "t1"
+    assert not [name for name in sent if "rail" in name]
+    # The client's own default, not the agent's.
+    assert sent["accept-encoding"] != "br, zstd"
+    assert "last-event-id" not in sent
+    assert "mcp-protocol-version" not in sent
+
+
+@pytest.mark.asyncio
 async def test_health_stays_200_while_failing_closed(config, upstream, monkeypatch):
     """200, and the state in the body. The route says why it is not 503."""
     monkeypatch.setenv("RAIL_PLUGIN_ENABLED", "true")

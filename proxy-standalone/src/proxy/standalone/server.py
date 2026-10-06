@@ -12,6 +12,7 @@ It is also the boundary: no header the agent supplies reaches an upstream.
 
 import logging
 import os
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
@@ -36,6 +37,7 @@ from proxy.core.settings import (
 from proxy.core.xrail_auth import (
     TicketHolder,
     XRailInjector,
+    agent_header_may_cross,
     redact_credentials,
 )
 
@@ -267,8 +269,37 @@ def _clip(value: object, limit: int = 80) -> str:
     return text if len(text) <= limit else text[:limit] + "…"
 
 
+# The agent's headers that belong to its own connection to this proxy, not to
+# the request: the proxy's client sends its own. `mcp-*` is the agent's MCP
+# session with this proxy, `last-event-id` resumes the agent's stream from this
+# proxy, and `accept-encoding` is what the agent can decode, while it is this
+# proxy's client that decodes the upstream's answer.
+_THIS_HOP = frozenset({"accept-encoding", "last-event-id"})
+
+
+def forwardable(headers: Mapping[str, str]) -> dict[str, str]:
+    """The agent's headers that may reach an upstream.
+
+    Every header except the x-rail ones and any with `_` in its name, which no
+    interface forwards (`agent_header_may_cross`), and the ones that belong to
+    this hop rather than the request. fastmcp has already left out the
+    transport's own (`host`, `content-length`, `mcp-session-id`, …).
+    """
+    return {
+        name: value
+        for name, value in headers.items()
+        if agent_header_may_cross(name)
+        and not name.lower().startswith("mcp-")
+        and name.lower() not in _THIS_HOP
+    }
+
+
 def upstream_client(**kwargs: Any) -> httpx.AsyncClient:
     """The client every mount dials its upstream with.
+
+    The agent's headers fastmcp hands it are filtered (`forwardable`), so the
+    x-rail namespace reaches an upstream only as the injector writes it, with
+    the plugin off as much as on.
 
     Three overrides. Two are about where the ticket may end up — it is on every
     request this client sends, so anything that changes the destination hands it
@@ -290,6 +321,8 @@ def upstream_client(**kwargs: Any) -> httpx.AsyncClient:
     roots, so the context is built separately — otherwise shutting out the first
     would also shut out `SSL_CERT_FILE`.
     """
+    if kwargs.get("headers") is not None:
+        kwargs = {**kwargs, "headers": forwardable(kwargs["headers"])}
     return httpx.AsyncClient(
         **{
             **kwargs,
