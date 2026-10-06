@@ -9,9 +9,9 @@ from dataclasses import dataclass, field
 from urllib.parse import urlsplit
 
 from proxy.core.xrail_auth import (
-    XRAIL_HEADER,
     XRAIL_UPSTREAM_HEADER,
     OutboundHeaders,
+    is_xrail_header,
 )
 from proxy.envoy_grpc.settings import ProtectedHost
 
@@ -85,12 +85,8 @@ def decide(
         XRAIL_UPSTREAM_HEADER: "tls" if protected.tls else "plain",
         ":authority": f"{shown}:{port}" if port else shown,
     }
-    remove = {name.lower() for name in request_headers if _is_xrail(name.lower())}
+    remove = {name.lower() for name in request_headers if is_xrail_header(name)}
     return Decision(headers=headers, remove=frozenset(remove - set(headers)))
-
-
-def _is_xrail(name: str) -> bool:
-    return name == XRAIL_HEADER or name.startswith(XRAIL_HEADER + "-")
 
 
 def _split_target(target: str) -> tuple[str, int | None]:
