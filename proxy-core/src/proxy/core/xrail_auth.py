@@ -952,34 +952,6 @@ XRAIL_HEADER = "x-rail"
 XRAIL_STATUS_HEADER = "x-rail-status"
 XRAIL_UPSTREAM_HEADER = "x-rail-upstream"
 
-#: The agent's headers that may reach a protected upstream, for an interface
-#: that forwards the agent's own request rather than building one. Every other
-#: header the agent sends is removed, so the upstream sees a closed set, as it
-#: does from the standalone proxy, which forwards none of the agent's headers
-#: and sends only its HTTP client's own.
-#:
-#: Close to standalone's closed set, and not equal to it. Standalone's tests
-#: pin two sets, and both include `connection`, which is hop-by-hop and never
-#: forwarded as the agent sent it, so it is not here. `cache-control` is in
-#: only one of standalone's, and `last-event-id`, which a resumed SSE stream
-#: sends, is in neither. Reconciling the two is a change of its own; until
-#: then standalone's tests keep their sets, and only the Envoy interface reads
-#: this one.
-ALLOWED_AGENT_HEADERS = frozenset(
-    {
-        "host",
-        "accept",
-        "accept-encoding",
-        "content-length",
-        "content-type",
-        "user-agent",
-        "mcp-protocol-version",
-        "mcp-session-id",
-        "cache-control",
-        "last-event-id",
-    }
-)
-
 
 @dataclass(frozen=True)
 class OutboundHeaders:

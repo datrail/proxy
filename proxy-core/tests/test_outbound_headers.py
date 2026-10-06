@@ -1,11 +1,10 @@
 """What goes out with a request: the x-rail headers, decided once for every
-interface, and the agent headers an interface that forwards may let through."""
+interface."""
 
 import pytest
 
 from core_support import wound_holder, xrail_params
 from proxy.core.xrail_auth import (
-    ALLOWED_AGENT_HEADERS,
     XRAIL_HEADER,
     XRAIL_STATUS_HEADER,
     XRAIL_UPSTREAM_HEADER,
@@ -74,17 +73,6 @@ def test_a_missing_ticket_is_warned_about_once_per_outage(caplog):
 
     warnings = [r for r in caplog.records if "no valid ticket" in r.getMessage()]
     assert len(warnings) == 2
-
-
-def test_the_allowlist_lets_no_credential_or_rail_header_through():
-    """An agent can't send its own credentials to a protected upstream through
-    any interface, and only this proxy writes the x-rail namespace."""
-    assert all(name == name.lower() for name in ALLOWED_AGENT_HEADERS)
-    assert (
-        not {"authorization", "proxy-authorization", "cookie"} & ALLOWED_AGENT_HEADERS
-    )
-    assert not [n for n in ALLOWED_AGENT_HEADERS if n.startswith("x-rail")]
-    assert not [n for n in ALLOWED_AGENT_HEADERS if n.startswith(":")]
 
 
 @pytest.mark.parametrize("case", xrail_params("core"))

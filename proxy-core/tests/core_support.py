@@ -79,9 +79,8 @@ def wound_holder(*, ticket: str | None = None, reason: str | None = None):
 
 #: Everything standalone's HTTP client itself puts on a forwarded tool call.
 #: The identity headers are added per case, so a new name appearing on either
-#: path fails rather than passing unnoticed. Standalone's own set: the Envoy
-#: interface's is `ALLOWED_AGENT_HEADERS`, and reconciling the two is a change
-#: of its own.
+#: path fails rather than passing unnoticed. Standalone's alone: the Envoy
+#: interface forwards the agent's own request, so it has no set of its own.
 EXPECTED_OUTBOUND = frozenset(
     {
         "host",
