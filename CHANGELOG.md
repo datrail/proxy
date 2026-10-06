@@ -41,7 +41,7 @@ and, from the first release that has it, `ghcr.io/datrail/proxy-envoy-grpc`.
 
 ### Changed
 
-- **The source is a uv workspace of two packages**, `proxy-core` and `proxy-standalone` (importing as `proxy.core` and `proxy.standalone`), so a second image can install only what it runs. The image is unchanged — same name, user, port, environment and installed packages — except that its command is now `python -m proxy.standalone` and its Python environment lives in `/app/.venv`, first on `PATH`. The mount point for the bridge file is still `/app/standalone/bridge.yaml`. Every dependency, transitive ones included, is now pinned by `uv.lock`, and running from source needs Python 3.12.
+- **The source is a uv workspace**: `proxy-core`, and a package per interface, `proxy-standalone` and `proxy-envoy-grpc` (importing as `proxy.core`, `proxy.standalone` and `proxy.envoy_grpc`), so each image installs only what it runs. The `ghcr.io/datrail/proxy` image is unchanged — same name, user, port, environment and installed packages — except that its command is now `python -m proxy.standalone` and its Python environment lives in `/app/.venv`, first on `PATH`. The mount point for the bridge file is still `/app/standalone/bridge.yaml`. Every dependency, transitive ones included, is now pinned by `uv.lock`, and running from source needs Python 3.12.
 - **Log lines are named after the module that wrote them**, e.g.
   `proxy.standalone.server` and `proxy.core.xrail_auth`, in place of
   `fastmcp_proxy` and `fastmcp_proxy.xrail`. Anything that filters this proxy's

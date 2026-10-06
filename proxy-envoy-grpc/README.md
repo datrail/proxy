@@ -4,12 +4,30 @@
 request, and it adds the `x-rail` headers to requests for protected hosts. See
 the [main README](../README.md) for the whole.
 
-## How it works
+## Architecture
+
+```mermaid
+flowchart LR
+  agent["Agent"] -->|"HTTP, the target in Host"| strip
+  subgraph envoy["Envoy, reference config"]
+    strip["header_mutation: removes x-rail and x-rail-*"] --> authz["ext_authz"]
+    authz --> route{"route on x-rail-upstream"}
+  end
+  authz <-->|"Check, on a unix socket"| ext["proxy-envoy-grpc"]
+  center["Rail Center"] -->|"ticket for host plus sandbox"| ext
+  route -->|"tls"| tls["TLS dynamic forward proxy"]
+  route -->|"plain, or none"| plain["plain dynamic forward proxy"]
+  tls --> protected["protected host, over HTTPS"]
+  plain --> other["a protected http:// host, or any other host"]
+```
 
 The agent's HTTP traffic goes through Envoy, and Envoy calls this service
 (ext_authz, on a unix socket) for every request before forwarding it. Envoy
 forwards the agent's own request, rather than building a new one as
-[proxy-standalone](../proxy-standalone/README.md) does.
+[proxy-standalone](../proxy-standalone/README.md#architecture) does. The
+service answers with the headers to set and remove; for a protected host that
+includes `x-rail-upstream`, which picks the route, and `:authority`, which says
+where to connect.
 
 Before the call, Envoy removes any `x-rail` or `x-rail-*` header the agent
 sent. The service then looks at the request's host:

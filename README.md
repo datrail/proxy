@@ -32,22 +32,23 @@ To attach an identity, and for the full configuration, see
 
 ```mermaid
 flowchart LR
-  agent[Agent sandbox] --> proxy[DatRail Proxy]
-  center[Rail Center] -->|ticket for host plus sandbox| proxy
-  proxy -->|MCP plus x-rail| gateway[DatRail Gateway]
-  gateway --> server[MCP server]
+  agent["Agent sandbox"] --> proxy["DatRail Proxy"]
+  center["Rail Center"] -->|"ticket for host plus sandbox"| proxy
+  proxy -->|"the call plus x-rail"| gateway["DatRail Gateway"]
+  gateway --> server["MCP server"]
 ```
 
-With `RAIL_PLUGIN_ENABLED=true` the proxy fetches and refreshes its own ticket;
-if no valid ticket is available it forwards no identity and sets an
-`x-rail-status` reason. An `x-rail` header the agent supplies never crosses.
-
-The two forms differ in what else crosses. proxy-standalone makes every call to
-the upstream itself, so none of the agent's headers reach it. proxy-envoy-grpc
-changes the agent's own request, so the agent's other headers reach the
-upstream as sent; only its `x-rail` headers, and any with `_` in the name, are
-removed, and only protected hosts get the ticket. The fetch response is defined by
+The proxy sits between the agent and its MCP servers. With
+`RAIL_PLUGIN_ENABLED=true` it fetches and refreshes its own ticket, and
+attaches it to what the agent sends; if no valid ticket is available it
+forwards no identity and sets an `x-rail-status` reason. An `x-rail` header
+the agent supplies never crosses. The fetch response is defined by
 [`spec/ticket-fetch.schema.json`](spec/ticket-fetch.schema.json).
+
+The two forms put the proxy in that path differently, and differ in what else
+of the agent's request crosses: see
+[proxy-standalone's](proxy-standalone/README.md#architecture) and
+[proxy-envoy-grpc's](proxy-envoy-grpc/README.md#architecture) architecture.
 
 The proxy and [DatRail Gateway](https://github.com/datrail/gateway) have
 separate, responsibility-specific cores: the proxy obtains and injects an opaque
@@ -69,7 +70,7 @@ packages it runs:
 
 | Package | Import | What it holds |
 |---|---|---|
-| [proxy-core](proxy-core/README.md) | `proxy.core` | ticket lifecycle and byte-for-byte `x-rail` injection |
+| [proxy-core](proxy-core/README.md) | `proxy.core` | the ticket's lifecycle and the `x-rail` headers, and what every interface shares: settings, logging and redaction, and health |
 | [proxy-standalone](proxy-standalone/README.md) | `proxy.standalone` | FastMCP host, process configuration and bridge file; its Dockerfile builds `ghcr.io/datrail/proxy` |
 | [proxy-envoy-grpc](proxy-envoy-grpc/README.md) | `proxy.envoy_grpc` | the service Envoy calls on each request, its settings and the reference Envoy config; its Dockerfile builds `ghcr.io/datrail/proxy-envoy-grpc` |
 

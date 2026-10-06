@@ -6,6 +6,33 @@ process configuration, the bridge file, and the HTTP server. Its Dockerfile
 builds `ghcr.io/datrail/proxy`. See the [main README](../README.md) for the
 whole.
 
+## Architecture
+
+```mermaid
+flowchart LR
+  agent["Agent (MCP client)"] -->|"MCP, POST /mcp"| host
+  subgraph standalone["proxy-standalone"]
+    host["FastMCP host: every upstream's tools, as name_tool"] --> client["an MCP client per upstream"]
+    holder["TicketHolder"] -->|"x-rail or x-rail-status"| client
+  end
+  bridge["bridge.yaml"] -.->|"the upstreams"| host
+  center["Rail Center"] -->|"ticket for host plus sandbox"| holder
+  client -->|"MCP plus x-rail"| upstream["upstream: DatRail Gateway or an MCP server"]
+```
+
+The agent speaks MCP to the proxy, and the proxy's own MCP clients make every
+call upstream. Nothing of the agent's request crosses but the call itself:
+
+- **None of the agent's headers** reach an upstream, `x-rail` and
+  `Authorization` included. What arrives is the client's own headers, plus
+  `x-rail` with the ticket, or `x-rail-status` with the reason there is none,
+  or neither when the plugin is off.
+- **Only the bridge file's upstreams** get the ticket. Redirects are not
+  followed, and no ambient proxy setting is read.
+- **Startup waits for the first fetch**, bounded by
+  `RAIL_PROXY_TICKET_TIMEOUT_SECONDS`, before the port is bound. A failed fetch
+  doesn't stop it: calls then carry `x-rail-status`.
+
 ## Run
 
 The main README's [quick start](../README.md#quick-start) runs the image

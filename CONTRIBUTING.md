@@ -1,6 +1,8 @@
 # Contributing to the DatRail proxy
 
-The proxy sits in front of an agent's outbound MCP calls, and keeps the credential identifying that agent out of the sandbox. [README.md](README.md) says what it does; [SECURITY.md](SECURITY.md) says where the sharp edges are, and reading that one first will save you a rejected pull request.
+The proxy sits in the path of an agent's outbound calls to its MCP servers, and keeps the credential identifying that agent out of the sandbox.
+- [README.md](README.md) says what it does;
+- [SECURITY.md](SECURITY.md) says where the sharp edges are.
 
 ## Before you write code
 
@@ -8,8 +10,9 @@ Open an issue first for anything beyond an obvious fix. Anything touching which 
 
 ## Running it
 
-- From source: [proxy-standalone](proxy-standalone/README.md#from-source),
-  which also covers configuration.
+- From source: [proxy-standalone](proxy-standalone/README.md#from-source) or
+  [proxy-envoy-grpc](proxy-envoy-grpc/README.md#run-it-beside-envoy). Each
+  README also covers its configuration.
 - The suite, lint and e2e: [Development](README.md#development) in the README.
   CI runs the same `make` targets.
 

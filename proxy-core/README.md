@@ -1,9 +1,12 @@
 # proxy-core
 
 `proxy.core`, DatRail Proxy's vendor-neutral core: obtaining this proxy's
-`x-rail` ticket from Rail Center and putting it on every outbound request. It
-imports no other member of this workspace; the standalone host, and any future
-interface, builds on it. See the [main README](../README.md) for the whole.
+`x-rail` ticket from Rail Center and deciding what goes on each outbound
+request, plus what every interface runs the same way: its settings, logging
+and health. It imports no other member of this workspace; every interface,
+[proxy-standalone](../proxy-standalone/README.md) and
+[proxy-envoy-grpc](../proxy-envoy-grpc/README.md), builds on it. See the
+[main README](../README.md) for the whole.
 
 ## The ticket
 
@@ -12,8 +15,12 @@ interface, builds on it. See the [main README](../README.md) for the whole.
   [`tests/fixtures/tickets.json`](tests/fixtures/tickets.json) is the instance
   the suite validates against it.
 - `TicketHolder` keeps a valid one to hand, refreshing it in the background.
-- `XRailInjector` puts it on every outbound request; a rotation is picked up
-  without a restart.
+- `outbound_headers` decides what a request gets: `x-rail`, `x-rail-status`,
+  or neither when the plugin is off. `TicketHeaders` adds the log line: a
+  warning when the reason there is no ticket changes, not on every request.
+- `XRailInjector` puts that on every request an httpx client sends, as
+  proxy-standalone's does; proxy-envoy-grpc hands it to Envoy instead. Either
+  way a rotation is picked up without a restart.
 
 **The ticket is opaque.** What is inside it is the gateway's contract, and
 nothing here looks: expiry comes from `expires_at` alone, and an entry without
@@ -33,6 +40,21 @@ reason in `x-rail-status`:
 An expired or absent ticket is never sent, and enforcement belongs to the
 gateway, where an absent `x-rail` denies. The reason never goes in `x-rail`
 itself.
+
+## The process around it
+
+Every interface starts the same way, so these live here rather than in each:
+
+- `proxy.core.settings` reads the variables below and refuses the same
+  mistakes with a `ConfigError`, which each interface turns into exit 2. It
+  also refuses a credential in an upstream URL, and warns about a plaintext
+  one.
+- `proxy.core.logs` sets the format and `RAIL_PROXY_LOG_LEVEL`, and puts
+  `RedactingFilter` on every handler, so a credential in a URL never reaches a
+  log line.
+- `proxy.core.lifecycle` builds the holder, runs it (waiting for the first
+  fetch, as proxy-standalone does, or not, as proxy-envoy-grpc does), and
+  builds the health payload both report.
 
 ## Configuration
 
