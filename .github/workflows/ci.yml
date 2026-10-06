@@ -56,47 +56,10 @@ jobs:
       - run: make init
       - run: make test
 
-  # A build failure should surface on the pull request rather than on the tag
-  # that publishes it. container-release.yml calls this whole workflow before it
-  # pushes anything, so this job runs on both paths.
-  image:
-    runs-on: ubuntu-26.04
-    # One entry per image. Each cache scope is shared with container-release.yml:
-    # keep the names in step.
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - dockerfile: proxy-standalone/Dockerfile
-            scope: image-standalone
-          - dockerfile: proxy-envoy-grpc/Dockerfile
-            scope: image-envoy-grpc
-    steps:
-      - uses: actions/checkout@v7
-        with:
-          ref: ${{ inputs.ref }}
-      - uses: docker/setup-buildx-action@v4
-
-      # Build-only, amd64 only: arm64 would answer "does it build" no differently.
-      # Context is the repo root, for uv.lock; Dockerfile.dockerignore limits what
-      # is sent.
-      - uses: docker/build-push-action@v7
-        with:
-          context: .
-          file: ${{ matrix.dockerfile }}
-          push: false
-          cache-from: type=gha,scope=${{ matrix.scope }}
-          cache-to: type=gha,mode=max,scope=${{ matrix.scope }}
-
-  # The only job that runs the image rather than building it: each stack in e2e/
-  # brings up a proxy against a stubbed control plane and a stubbed upstream
-  # and asserts what reached the wire. The unit suite drives the application
-  # in-process, so nothing else here proves the container starts, binds a real
-  # port, or completes a real handshake.
+  # Builds and runs each image against stubs, which the unit suite, running
+  # in-process, can't: the container starts, binds and completes a handshake.
   e2e:
     runs-on: ubuntu-26.04
-    # One entry per stack under e2e/, each its own job so one failing doesn't
-    # hide the other's result.
     strategy:
       fail-fast: false
       matrix:
@@ -107,11 +70,19 @@ jobs:
           ref: ${{ inputs.ref }}
       - uses: docker/setup-buildx-action@v4
 
-      # Compose builds the image itself; --exit-code-from makes the driver's
-      # verdict the job's.
+      # Compose can't reach the GHA cache, so build here first; compose's own
+      # build then finds every layer in this builder. The scope is shared with
+      # container-release.yml: keep the names in step.
+      - uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: proxy-${{ matrix.stack }}/Dockerfile
+          push: false
+          cache-from: type=gha,scope=image-${{ matrix.stack }}
+          cache-to: type=gha,mode=max,scope=image-${{ matrix.stack }}
+
       - run: make e2e-${{ matrix.stack }}
 
-      # The stack is worth nothing if a failure is invisible, and the driver's
-      # own output scrolls past on a green run.
       - if: failure()
         run: docker compose -f e2e/${{ matrix.stack }}/compose.yml logs --no-color
+

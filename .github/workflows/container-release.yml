@@ -140,7 +140,7 @@ jobs:
           # attestation below makes redundant. Off, so the image carries one
           # provenance record rather than two with different trust in them.
           provenance: false
-          # Shared with ci.yml's image job, so a release reuses its amd64 layers:
+          # Shared with ci.yml's e2e job, so a release reuses its amd64 layers:
           # keep the two names in step. A literal, not ${{ github.workflow }}.
           cache-from: type=gha,scope=image-standalone
           cache-to: type=gha,mode=max,scope=image-standalone
