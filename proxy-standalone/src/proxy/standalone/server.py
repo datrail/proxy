@@ -7,7 +7,8 @@ What this module holds is the path a request travels, the configuration behind
 it, and the wiring that puts this proxy's own `x-rail` ticket on everything it
 forwards. Obtaining and holding that ticket is `xrail_auth`'s.
 
-It is also the boundary: no header the agent supplies reaches an upstream.
+It is also the boundary for the x-rail namespace: the agent's own headers reach
+an upstream, as through the Envoy interface, but never an `x-rail` one.
 """
 
 import logging
@@ -369,19 +370,11 @@ def build_gateway(holder: TicketHolder | None) -> FastMCP:
             name=f"proxy-{srv['name']}",
         )
 
-        # After `create_proxy`, not before: it mutates the transport it is
-        # handed, so setting this first is silently undone. The line reads like
-        # ordinary transport configuration and moving it up to the constructor
-        # is the natural tidy-up, which is why the order is stated here.
-        #
-        # `create_proxy` turns on incoming-header forwarding, which is wrong for
-        # this component in the one way that matters: the sandbox could set
-        # `x-rail` itself and have it arrive upstream unchanged, so the identity
-        # the proxy exists to assert would be supplied by the caller it exists
-        # to identify. `authorization` rides the same path, re-included by
-        # fastmcp rather than stripped. The proxy is the boundary; nothing the
-        # agent sends crosses it.
-        transport.forward_incoming_headers = False
+        # `create_proxy` turns on fastmcp's incoming-header forwarding, so
+        # each upstream request carries the headers of the agent request that
+        # caused it, as through the Envoy interface. `upstream_client` filters
+        # them: the x-rail namespace reaches an upstream only as the injector
+        # writes it.
 
         # Always namespaced, even with one upstream: two upstreams each with a
         # `search` tool would be indistinguishable without it, and namespacing

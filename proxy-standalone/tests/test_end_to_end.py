@@ -6,6 +6,7 @@ upstream that records what it received — so it is the only place that can catc
 the mount, the transport and the request path disagreeing with each other.
 """
 
+import asyncio
 import contextlib
 import json
 import os
@@ -395,11 +396,12 @@ async def test_what_reaches_the_upstream_is_the_x_rail_contract(config, upstream
     """Each row of the shared table, on the wire. The table is lifted from what
     this proxy does, so this is the reference every other interface is held to.
 
-    The proxy is the identity boundary. `create_proxy` turns on incoming-header
-    forwarding, so without the switch being turned back off an agent sets
-    `x-rail` itself and the upstream receives it unchanged — an identity
-    supplied by the caller it identifies. `authorization` is forwarded by the
-    same path. The forged rows are that case, in every holder state.
+    The proxy is the identity boundary for the x-rail namespace. The agent's
+    own headers are forwarded, as through the Envoy interface, so an agent that
+    sets `x-rail` itself would have the upstream receive it unless the proxy
+    stops it — an identity supplied by the caller it identifies. The forged
+    rows are that case, in every holder state, with the agent's own
+    `authorization` crossing beside them.
     """
     arrived = await _forward_one_call(case.holder(), case.agent_headers)
 
@@ -407,6 +409,8 @@ async def test_what_reaches_the_upstream_is_the_x_rail_contract(config, upstream
     # reach the same gateway as `tools/call`.
     assert upstream, "nothing reached the upstream"
     for name, value in case.expected.items():
+        assert {hit["headers"].get(name) for hit in upstream} == {value}, name
+    for name, value in case.forwarded.items():
         assert {hit["headers"].get(name) for hit in upstream} == {value}, name
     for name in case.absent:
         assert {hit["headers"].get(name) for hit in upstream} == {None}, name
@@ -417,9 +421,8 @@ async def test_what_reaches_the_upstream_is_the_x_rail_contract(config, upstream
     calls = [c for c in upstream if c["method"] == "tools/call"]
     assert calls, "no tool call reached the upstream"
     for call in calls:
-        assert set(call["headers"]) <= EXPECTED_OUTBOUND | set(case.expected), sorted(
-            set(call["headers"]) - EXPECTED_OUTBOUND - set(case.expected)
-        )
+        allowed = EXPECTED_OUTBOUND | set(case.expected) | set(case.forwarded)
+        assert set(call["headers"]) <= allowed, sorted(set(call["headers"]) - allowed)
 
     # A positive control. The forged assertions are absences, and an absence
     # holds just as well if the forged headers never left the test's own
@@ -428,6 +431,65 @@ async def test_what_reaches_the_upstream_is_the_x_rail_contract(config, upstream
     assert arrived, "no request reached the proxy"
     for name, value in case.agent_headers.items():
         assert {hit.get(name) for hit in arrived} == {value}, name
+
+
+@pytest.mark.asyncio
+async def test_what_only_this_hop_or_another_spelling_carries_never_crosses(
+    config, upstream
+):
+    """Beside the table's forged rows: `x_rail`, which many servers read as
+    `x-rail`, and the agent's headers about its own connection to this proxy.
+    The Envoy interface leaves the first to Envoy, so the table can't hold it."""
+    agent = {
+        "x_rail": "forged",
+        "x_rail_status": "forged",
+        "accept-encoding": "br, zstd",
+        "x-trace": "t1",
+    }
+    arrived = await _forward_one_call(wound_holder(ticket="the-ticket"), agent)
+
+    assert {hit.get("x_rail") for hit in arrived} == {"forged"}
+    assert upstream
+    for hit in upstream:
+        assert "x_rail" not in hit["headers"]
+        assert "x_rail_status" not in hit["headers"]
+        assert hit["headers"].get("accept-encoding") != "br, zstd"
+        assert hit["headers"]["x-trace"] == "t1"
+        assert hit["headers"]["x-rail"] == "the-ticket"
+
+
+@pytest.mark.asyncio
+async def test_concurrent_agents_headers_stay_with_their_own_calls(config, upstream):
+    """Each upstream request carries the headers of the agent request that
+    caused it. That holds because fastmcp opens a fresh upstream session inside
+    each agent request; this pins it, since nothing in this proxy does."""
+    async with running_proxy(wound_holder(ticket="the-ticket")) as app:
+
+        async def agent(trace: str) -> None:
+            def factory(**kwargs):
+                return httpx.AsyncClient(
+                    transport=httpx.ASGITransport(app=app),
+                    base_url="http://proxy.test",
+                    **_client_kwargs(kwargs),
+                )
+
+            client = Client(
+                StreamableHttpTransport(
+                    url="http://proxy.test/mcp/",
+                    headers={"x-trace": trace},
+                    httpx_client_factory=factory,
+                )
+            )
+            async with client:
+                for _ in range(3):
+                    await client.call_tool("delivery_upstream", {"text": trace})
+
+        await asyncio.gather(*(agent(f"agent-{i}") for i in range(4)))
+
+    calls = [hit for hit in upstream if hit["method"] == "tools/call"]
+    assert len(calls) == 12
+    for call in calls:
+        assert call["headers"]["x-trace"] == call["arguments"]["text"]
 
 
 @pytest.mark.asyncio

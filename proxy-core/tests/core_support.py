@@ -95,13 +95,20 @@ EXPECTED_OUTBOUND = frozenset(
     }
 )
 
-#: What a sandbox would send to pass itself off as identified, or to carry a
-#: credential of its own upstream. None of it may cross.
+#: What a sandbox would send to pass itself off as identified. None of it may
+#: cross: `x-rail` is overwritten by the ticket or removed, and the rest of the
+#: namespace is removed. The `_` spellings are Envoy's to drop in the Envoy
+#: interface, so they are not here; each interface's own tests cover them.
 FORGED = {
     "x-rail": "forged-by-the-sandbox",
     "x-rail-status": "forged",
-    "authorization": "Bearer agent-secret",
+    "x-rail-foo": "forged",
 }
+
+#: The agent's own credential for the server, sent beside the forgeries. It
+#: crosses as sent: the agent's own headers are its business, in every
+#: interface.
+AGENTS_OWN = {"authorization": "Bearer agent-secret"}
 
 
 @dataclass(frozen=True)
@@ -119,8 +126,11 @@ class XRailCase:
     ticket: str | None = None
     reason: str | None = None
     agent_headers: Mapping[str, str] = field(default_factory=dict)
-    #: Headers the upstream must see, with exactly these values.
+    #: The x-rail headers the upstream must see, with exactly these values.
     expected: Mapping[str, str] = field(default_factory=dict)
+    #: The agent's own headers the upstream must see, as the agent sent them.
+    #: An interface's to forward, so core's decision never includes them.
+    forwarded: Mapping[str, str] = field(default_factory=dict)
     #: Headers the upstream must not see at all.
     absent: frozenset[str] = frozenset()
     not_for: Mapping[str, str] = field(default_factory=dict)
@@ -133,19 +143,22 @@ class XRailCase:
 
 
 def _with_forged(case: XRailCase) -> XRailCase:
-    """The same row with the agent forging every header it should not control.
+    """The same row with the agent forging every header it should not control,
+    and sending one of its own beside them.
 
-    The expectations are the row's own, so a forged `x-rail` is overwritten by
-    the real ticket or removed, never passed on, and `authorization` is absent.
+    The x-rail expectations are the row's own, so a forged `x-rail` is
+    overwritten by the real ticket or removed, never passed on. The agent's own
+    `authorization` crosses as sent.
     """
     return XRailCase(
         name=f"{case.name}, forged",
         plugin=case.plugin,
         ticket=case.ticket,
         reason=case.reason,
-        agent_headers=FORGED,
+        agent_headers={**FORGED, **AGENTS_OWN},
         expected=case.expected,
-        absent=case.absent | {"authorization"},
+        forwarded=AGENTS_OWN,
+        absent=case.absent | {"x-rail-foo"},
         not_for=case.not_for,
     )
 
