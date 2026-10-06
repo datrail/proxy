@@ -73,19 +73,22 @@ def equal_to(header, value):
 ANY_POST = posts()
 ANY_XRAIL = present("x-rail")
 ANY_STATUS = present("x-rail-status")
-# Presence, not the forged value: the proxy attaches no `authorization` of its
-# own, so any at all upstream came from the caller.
-ANY_AUTH = present("authorization")
 FORGED = equal_to("x-rail", "forged-by-the-sandbox")
+FORGED_STATUS = equal_to("x-rail-status", "forged-by-the-sandbox")
 
-# Every proxy is driven with both, not just the pass-through one. `authorization`
-# is driven for a reason the forged `x-rail` cannot cover: no injector writes
-# over it. A proxy holding a ticket sets `x-rail` whatever was forwarded, so with
-# forwarding back on the forged `x-rail` still never reaches the upstream, and
-# only the `authorization` assertion sees the breach.
-FORGED_HEADERS = {
+# Sent with every request, by every stack: the x-rail namespace forged, two of
+# it spelled with `_` for upstreams that read it as `-`, none of which cross,
+# and two of the agent's own, which cross as sent. A proxy holding a ticket
+# sets `x-rail` whatever was forwarded, so the forged `x-rail` alone can't show
+# a breach; the rest of the namespace can.
+AGENT_HEADERS = {
     "x-rail": "forged-by-the-sandbox",
-    "Authorization": "Bearer forged-by-the-sandbox",
+    "x-rail-status": "forged-by-the-sandbox",
+    "x-rail-foo": "forged-by-the-sandbox",
+    "x_rail": "forged-by-the-sandbox",
+    "x_rail_status": "forged-by-the-sandbox",
+    "x-trace": "the-agents-own",
+    "Authorization": "Bearer the-agents-own",
 }
 
 
@@ -160,6 +163,25 @@ def check(what, condition):
         print(f"  ok    {what}")
     else:
         _fail(what)
+
+
+def the_agents_own_headers_cross(base=UPSTREAM):
+    """What `AGENT_HEADERS` must have done at `base`: the agent's own headers
+    arrived as sent, and none of the forged x-rail ones did."""
+    expect(
+        "the agent's own header crosses as sent",
+        "some",
+        count(equal_to("x-trace", "the-agents-own"), base),
+    )
+    expect(
+        "so does its authorization",
+        "some",
+        count(equal_to("authorization", "Bearer the-agents-own"), base),
+    )
+    expect("no forged x-rail-foo crosses", "none", count(present("x-rail-foo"), base))
+    expect("nor x_rail", "none", count(present("x_rail"), base))
+    expect("nor x_rail_status", "none", count(present("x_rail_status"), base))
+    expect("every request matched a stub", "none", unmatched(base))
 
 
 def _fail(message):

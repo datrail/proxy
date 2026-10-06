@@ -1,19 +1,19 @@
 """Drives each standalone proxy and asserts what reached the upstream."""
 
 from lib import (
-    ANY_AUTH,
+    AGENT_HEADERS,
     ANY_POST,
     ANY_STATUS,
     ANY_XRAIL,
     FORGED,
-    FORGED_HEADERS,
+    FORGED_STATUS,
     count,
     drive,
     equal_to,
     expect,
     finish,
     reset_journal,
-    unmatched,
+    the_agents_own_headers_cross,
 )
 
 WITH_TICKET = equal_to("x-rail", "e2e-opaque-token")
@@ -21,13 +21,13 @@ WITH_TICKET = equal_to("x-rail", "e2e-opaque-token")
 
 def run(host):
     reset_journal()
-    drive(f"http://{host}:8091/mcp", FORGED_HEADERS)
+    drive(f"http://{host}:8091/mcp", AGENT_HEADERS)
 
 
 def the_boundary_holds():
     expect("the sandbox's own x-rail never crosses", "none", count(FORGED))
-    expect("no authorization crosses", "none", count(ANY_AUTH))
-    expect("every request matched a stub", "none", unmatched())
+    expect("nor its x-rail-status", "none", count(FORGED_STATUS))
+    the_agents_own_headers_cross()
 
 
 def fails_closed_with(reason):
