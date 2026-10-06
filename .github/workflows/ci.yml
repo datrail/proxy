@@ -26,6 +26,7 @@ jobs:
     # Named, not ubuntu-latest: that label moves to 26.04 from 2026-10-19 to
     # 11-19, run by run (actions/runner-images#14748). Move on purpose (DR-133).
     runs-on: ubuntu-26.04
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@v7
         with:
@@ -43,6 +44,7 @@ jobs:
 
   test:
     runs-on: ubuntu-26.04
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@v7
         with:
@@ -60,6 +62,7 @@ jobs:
   # in-process, can't: the container starts, binds and completes a handshake.
   e2e:
     runs-on: ubuntu-26.04
+    timeout-minutes: 10
     strategy:
       fail-fast: false
       matrix:
