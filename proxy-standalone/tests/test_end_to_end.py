@@ -17,11 +17,11 @@ import pytest
 from fastmcp import Client
 from fastmcp.client.transports import StreamableHttpTransport
 
-from core_support import EXPECTED_OUTBOUND, wound_holder, xrail_params
+from core_support import wound_holder, xrail_params
 from proxy.core import settings as core_settings
 from proxy.standalone import server as proxy_module
 from proxy.standalone.server import McpMethodCompat
-from standalone_support import MCP_ACCEPT, _client_kwargs
+from standalone_support import CLIENT_HEADERS, MCP_ACCEPT, _client_kwargs
 
 
 @contextlib.asynccontextmanager
@@ -127,21 +127,12 @@ async def test_no_identity_header_is_attached(config, upstream):
         await client.call_tool("delivery_upstream", {"text": "hello"})
 
     # Every header on the wire, not a two-name allowlist: a proxy that started
-    # attaching something else would otherwise pass this unchanged.
-    expected = {
-        "host",
-        "accept",
-        "accept-encoding",
-        "connection",
-        "user-agent",
-        "content-length",
-        "content-type",
-        "mcp-protocol-version",
-        "mcp-session-id",
-        "cache-control",
-    }
+    # attaching something else would otherwise pass this unchanged. The agent
+    # here sends nothing of its own, so the client's headers are all there is.
+    assert upstream
     for hit in upstream:
-        assert set(hit["headers"]) <= expected, sorted(set(hit["headers"]) - expected)
+        extra = set(hit["headers"]) - CLIENT_HEADERS
+        assert not extra, sorted(extra)
 
 
 @pytest.mark.asyncio
@@ -415,14 +406,14 @@ async def test_what_reaches_the_upstream_is_the_x_rail_contract(config, upstream
     for name in case.absent:
         assert {hit["headers"].get(name) for hit in upstream} == {None}, name
 
-    # The whole header set on the call, not just the names this row is about.
-    # A proxy that started sending a fingerprint, or anything else derived from
-    # the ticket, would otherwise be invisible on the one path that carries it.
-    calls = [c for c in upstream if c["method"] == "tools/call"]
-    assert calls, "no tool call reached the upstream"
-    for call in calls:
-        allowed = EXPECTED_OUTBOUND | set(case.expected) | set(case.forwarded)
-        assert set(call["headers"]) <= allowed, sorted(set(call["headers"]) - allowed)
+    # The whole header set on every request, not just the names this row is
+    # about: the client's own, the agent's that cross, and the row's x-rail
+    # one. A proxy that started sending a fingerprint, or anything else derived
+    # from the ticket, would otherwise be invisible on the path that carries it.
+    allowed = CLIENT_HEADERS | set(case.expected) | set(case.forwarded)
+    for hit in upstream:
+        extra = set(hit["headers"]) - allowed
+        assert not extra, (hit["method"], sorted(extra))
 
     # A positive control. The forged assertions are absences, and an absence
     # holds just as well if the forged headers never left the test's own

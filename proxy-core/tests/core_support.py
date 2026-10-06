@@ -77,24 +77,6 @@ def wound_holder(*, ticket: str | None = None, reason: str | None = None):
     return holder
 
 
-#: Everything standalone's HTTP client itself puts on a forwarded tool call.
-#: The identity headers are added per case, so a new name appearing on either
-#: path fails rather than passing unnoticed. Standalone's alone: the Envoy
-#: interface forwards the agent's own request, so it has no set of its own.
-EXPECTED_OUTBOUND = frozenset(
-    {
-        "host",
-        "accept",
-        "accept-encoding",
-        "connection",
-        "user-agent",
-        "content-length",
-        "content-type",
-        "mcp-protocol-version",
-        "mcp-session-id",
-    }
-)
-
 #: What a sandbox would send to pass itself off as identified. None of it may
 #: cross: `x-rail` is overwritten by the ticket or removed, and the rest of the
 #: namespace is removed. The `_` spellings are Envoy's to drop in the Envoy
