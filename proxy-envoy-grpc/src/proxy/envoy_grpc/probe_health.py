@@ -6,8 +6,6 @@ Prints the status as JSON and exits 0 when the server answers, or exits 1 when
 it doesn't. The server answers whether or not a ticket is held.
 """
 
-from __future__ import annotations
-
 import sys
 
 import grpc

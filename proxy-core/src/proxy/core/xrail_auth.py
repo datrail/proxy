@@ -17,8 +17,6 @@ inside a URL — the same thing `_parse_base` and `describe` are careful about.
 `proxy.core.logs.RedactingFilter` is what applies it on every handler.
 """
 
-from __future__ import annotations
-
 import asyncio
 import hashlib
 import ipaddress
@@ -33,7 +31,7 @@ from urllib.parse import urlencode, urlsplit, urlunsplit
 
 import httpx
 
-log = logging.getLogger("fastmcp_proxy.xrail")
+log = logging.getLogger(__name__)
 
 #: Largest ticket response this proxy will read. A named fetch answers with at
 #: most one ticket, so a body past this is not a big answer but a wrong one, and

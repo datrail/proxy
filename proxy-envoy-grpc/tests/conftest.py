@@ -1,7 +1,5 @@
 """Fixtures for the proxy-envoy-grpc suite."""
 
-from __future__ import annotations
-
 import pytest
 
 from core_support import _RAIL_ENVIRONMENT

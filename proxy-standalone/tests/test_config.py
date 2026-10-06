@@ -5,8 +5,6 @@ sentence naming the file and the problem — and the point of the parametrisatio
 is that a hand-edited YAML file goes wrong in more shapes than an empty one.
 """
 
-from __future__ import annotations
-
 import logging
 import pathlib
 import re

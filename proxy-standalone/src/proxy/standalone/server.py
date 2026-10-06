@@ -10,12 +10,8 @@ forwards. Obtaining and holding that ticket is `xrail_auth`'s.
 It is also the boundary: no header the agent supplies reaches an upstream.
 """
 
-from __future__ import annotations
-
-import asyncio
 import logging
 import os
-import sys
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
@@ -45,7 +41,7 @@ from proxy.core.xrail_auth import (
 
 # Relative to the working directory: /app/standalone/bridge.yaml in the image.
 DEFAULT_CONFIG_FILE = Path("standalone/bridge.yaml")
-log = logging.getLogger("fastmcp_proxy")
+log = logging.getLogger(__name__)
 
 
 def config_file() -> Path:
@@ -522,7 +518,3 @@ async def main() -> int:
         install_redaction()
         await server.serve()
     return 0
-
-
-if __name__ == "__main__":
-    sys.exit(asyncio.run(main()))

@@ -5,8 +5,6 @@ directly. That each interface wires them in — exit 2 on a refusal, the refresh
 interval reaching its holder — is tested by that interface.
 """
 
-from __future__ import annotations
-
 import pytest
 
 from proxy.core import settings

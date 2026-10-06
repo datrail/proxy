@@ -1,8 +1,6 @@
 """What goes out with a request: the x-rail headers, decided once for every
 interface, and the agent headers an interface that forwards may let through."""
 
-from __future__ import annotations
-
 import pytest
 
 from core_support import wound_holder, xrail_params

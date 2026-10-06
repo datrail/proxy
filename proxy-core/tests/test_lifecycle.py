@@ -4,8 +4,6 @@ Whether startup waits for the first fetch is the one thing interfaces choose,
 so each behaviour here is checked in both modes where it applies.
 """
 
-from __future__ import annotations
-
 import asyncio
 import time
 

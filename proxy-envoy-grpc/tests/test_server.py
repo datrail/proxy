@@ -1,7 +1,5 @@
 """Tests for the gRPC server, over a real channel on a unix socket."""
 
-from __future__ import annotations
-
 import asyncio
 import json
 import os

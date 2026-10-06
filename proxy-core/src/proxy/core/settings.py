@@ -7,8 +7,6 @@ bounds on the fetch. What an interface serves, and how it is bound, stays in
 that interface.
 """
 
-from __future__ import annotations
-
 import logging
 import math
 import os
@@ -16,9 +14,7 @@ from urllib.parse import urlsplit
 
 from proxy.core.xrail_auth import TicketSource, is_loopback
 
-# The name the standalone proxy has always logged under, kept so its output is
-# unchanged by the move; renaming it is a change of its own.
-log = logging.getLogger("fastmcp_proxy")
+log = logging.getLogger(__name__)
 
 
 class ConfigError(Exception):

@@ -8,8 +8,6 @@ not. For proxy-core, which depends on no member, this is the rule that the
 core never imports the standalone host or any other interface.
 """
 
-from __future__ import annotations
-
 import ast
 import tomllib
 from pathlib import Path

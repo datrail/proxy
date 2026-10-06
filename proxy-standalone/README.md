@@ -63,5 +63,5 @@ Defaults to `30`.
 ```bash
 make init
 cp proxy-standalone/bridge.yaml.example bridge.yaml   # then edit it
-RAIL_PROXY_CONFIG_FILE=bridge.yaml uv run python -m proxy.standalone.server
+RAIL_PROXY_CONFIG_FILE=bridge.yaml uv run python -m proxy.standalone
 ```

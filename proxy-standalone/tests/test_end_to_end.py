@@ -6,8 +6,6 @@ upstream that records what it received — so it is the only place that can catc
 the mount, the transport and the request path disagreeing with each other.
 """
 
-from __future__ import annotations
-
 import contextlib
 import json
 import os

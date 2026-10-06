@@ -8,8 +8,6 @@ The same server answers a status method, for a health probe on the same unix
 socket.
 """
 
-from __future__ import annotations
-
 import asyncio
 import json
 import logging
