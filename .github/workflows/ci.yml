@@ -86,3 +86,12 @@ jobs:
       - if: failure()
         run: docker compose -f e2e/${{ matrix.stack }}/compose.yml logs --no-color
 
+  # The check the ruleset requires, in place of one per stack. always(): a
+  # failed stack would otherwise skip it, and a skipped check counts as passing.
+  e2e-passed:
+    needs: e2e
+    if: always()
+    runs-on: ubuntu-slim
+    steps:
+      - if: needs.e2e.result != 'success'
+        run: exit 1
