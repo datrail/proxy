@@ -71,7 +71,7 @@ packages it runs:
 |---|---|---|
 | [proxy-core](proxy-core/README.md) | `proxy.core` | ticket lifecycle and byte-for-byte `x-rail` injection |
 | [proxy-standalone](proxy-standalone/README.md) | `proxy.standalone` | FastMCP host, process configuration and bridge file; its Dockerfile builds `ghcr.io/datrail/proxy` |
-| [proxy-envoy-grpc](proxy-envoy-grpc/README.md) | `proxy.envoy_grpc` | the service Envoy calls on each request, its settings and the reference Envoy config |
+| [proxy-envoy-grpc](proxy-envoy-grpc/README.md) | `proxy.envoy_grpc` | the service Envoy calls on each request, its settings and the reference Envoy config; its Dockerfile builds `ghcr.io/datrail/proxy-envoy-grpc` |
 
 Dependencies point one way: every interface imports the vendor-neutral core,
 and the core imports no interface. More generally, a package imports only the

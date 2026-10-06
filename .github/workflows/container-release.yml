@@ -1,14 +1,9 @@
-# Build and publish a versioned container image to GitHub Packages (ghcr.io).
+# Build and publish versioned container images to GitHub Packages (ghcr.io).
 #
-# Each component repository carries its own copy at this path; there is no
-# shared workflow repo, so a fix here has to be carried to the others by hand.
-# Publishing is driven by tags: `git tag v0.1.0 && git push --tags` produces
-# ghcr.io/<owner>/<repo>:0.1.0, :0.1, and :latest, multi-arch, with an SBOM and
-# a signed build-provenance attestation.
-#
-# Builds proxy-standalone/Dockerfile, with the repository root as context (the
-# image installs from uv.lock). A second image needs its own build step and image
-# name: this one publishes as the repository's name, which deployments pull.
+# `git tag v0.1.0 && git push --tags` publishes :0.1.0, :0.1 and :latest of
+# every image in `publish`, multi-arch, each with an SBOM and a signed
+# build-provenance attestation. Standalone publishes as the repository's name,
+# which deployments pull.
 name: Release Container Images
 
 on:
@@ -26,10 +21,8 @@ permissions:
   id-token: write
   attestations: write
 
-# Keyed on the repository, not the ref. Every tag is a distinct ref, so a
-# ref-keyed group lets `v0.1.0` and `v0.1.1` publish concurrently — and both
-# write the same mutable `:0.1` and `:latest` tags, which is a last-write-wins
-# race on exactly the pointers people pull by.
+# Per repository, not per ref: two tags publishing at once would race to write
+# `:0.1` and `:latest`.
 concurrency:
   group: container-release-${{ github.repository }}
   cancel-in-progress: false
@@ -48,19 +41,9 @@ jobs:
       tag: ${{ steps.resolve.outputs.tag }}
       latest: ${{ steps.resolve.outputs.latest }}
     steps:
-      # Resolve the version before anything is checked out or built, and refuse
-      # anything that is not a release tag.
-      #
-      # This is load-bearing for workflow_dispatch. metadata-action derives its
-      # tags from the *event's* ref, not from what we checked out, so a manual
-      # run would tag whatever the "use workflow from" branch is — `type=semver`
-      # would match nothing and emit no version, while `latest` (a branch name
-      # has no hyphen) would fire anyway. Republishing v0.1.0 by hand would
-      # quietly push the branch head as `:latest` and nothing else.
-      #
-      # The same guard covers the tag trigger: the `v*` glob also matches `v1`
-      # and `vfoo`, which produce no semver tag but would still have moved
-      # `latest`.
+      # Refuse anything but vMAJOR.MINOR.PATCH: the `v*` glob also matches `v1`
+      # and `vfoo`, and a manual run would otherwise tag the branch it was
+      # launched from, moving `latest` either way.
       - id: resolve
         env:
           RAW_REF: ${{ github.event.inputs.tag || github.ref_name }}
@@ -79,9 +62,7 @@ jobs:
             echo "latest=true" >> "$GITHUB_OUTPUT"
           fi
 
-  # Publishing a version whose tests were never run is what this closes. The
-  # tag is checked out by name, so the suite runs against exactly what is
-  # about to be built rather than against whatever the run was launched from.
+  # Never publish an untested version: the suite runs on the tag itself.
   ci:
     needs: version
     uses: ./.github/workflows/ci.yml
@@ -91,15 +72,23 @@ jobs:
   publish:
     needs: [version, ci]
     runs-on: ubuntu-26.04
+    # One entry per image, as in ci.yml. Not fail-fast: a cancelled job doesn't
+    # unpublish, and rerunning the failed entry completes the release.
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - stack: standalone
+            image: ghcr.io/${{ github.repository }}
+          - stack: envoy-grpc
+            image: ghcr.io/${{ github.repository }}-envoy-grpc
     steps:
       - uses: actions/checkout@v7
         with:
           ref: ${{ needs.version.outputs.tag }}
 
-      # The commit the tag actually points at. `github.sha` is the ref the run
-      # was launched from, which on a workflow_dispatch is the branch in the
-      # "use workflow from" box, not the tag being republished — so labelling
-      # with it would stamp the image with a commit it was not built from.
+      # The tag's commit: on a manual run, `github.sha` is the branch it was
+      # launched from, not what was built.
       - id: commit
         run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
@@ -115,7 +104,7 @@ jobs:
       - id: meta
         uses: docker/metadata-action@v6
         with:
-          images: ghcr.io/${{ github.repository }}
+          images: ${{ matrix.image }}
           # `value=` pins every tag to the version resolved above, so a manual
           # dispatch tags what it built rather than what it was launched from.
           tags: |
@@ -130,62 +119,48 @@ jobs:
         uses: docker/build-push-action@v7
         with:
           context: .
-          file: proxy-standalone/Dockerfile
+          file: proxy-${{ matrix.stack }}/Dockerfile
           platforms: linux/amd64,linux/arm64
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           sbom: true
-          # buildx would attach its own *unsigned* provenance, which the signed
-          # attestation below makes redundant. Off, so the image carries one
-          # provenance record rather than two with different trust in them.
+          # Off: the signed attestation below replaces buildx's unsigned provenance.
           provenance: false
           # Shared with ci.yml's e2e job, so a release reuses its amd64 layers:
-          # keep the two names in step. A literal, not ${{ github.workflow }}.
-          cache-from: type=gha,scope=image-standalone
-          cache-to: type=gha,mode=max,scope=image-standalone
+          # keep the scope names in step.
+          cache-from: type=gha,scope=image-${{ matrix.stack }}
+          cache-to: type=gha,mode=max,scope=image-${{ matrix.stack }}
 
-      # Signed, verifiable statement that this digest came from this workflow:
-      # `gh attestation verify oci://ghcr.io/<owner>/<repo>:<tag> --owner <org>`.
-      #
-      # Attestations cover private repositories only on GitHub Enterprise
-      # Cloud; on Free, Pro and Team they are a public-repository feature. A
-      # private repository on a free org therefore cannot produce one, and no
-      # paid plan short of Enterprise Cloud changes that.
-      #
-      # The image is already pushed by the time this runs, so a hard failure
-      # would mark a successful publish as failed; it warns instead. This
-      # swallows every failure of the step, not only the plan one — the warning
-      # is the only signal either way.
-      #
-      # The provenance this generates records the workflow run's own ref, so a
-      # workflow_dispatch republish attests the dispatch context rather than the
-      # tag. The action offers no way to override that; the image labels carry
-      # the built commit instead.
+      # Checked with `gh attestation verify oci://<image>:<tag> --owner <org>`.
+      # Warns rather than fails: the image is already pushed. A manual run
+      # attests its own ref, not the tag; the image labels carry the commit.
       - id: attest
         continue-on-error: true
         uses: actions/attest-build-provenance@v4
         with:
-          subject-name: ghcr.io/${{ github.repository }}
+          subject-name: ${{ matrix.image }}
           subject-digest: ${{ steps.build.outputs.digest }}
           push-to-registry: true
-          # v4 would also write an artifact-metadata storage record, which
-          # needs `artifact-metadata: write` and only logs a warning without
-          # it. Off, as in v2: the attestation is what verification reads.
+          # Off: it needs `artifact-metadata: write`, and verification doesn't
+          # read it.
           create-storage-record: false
-
-      - if: steps.attest.outcome == 'failure'
-        run: echo "::warning::Image published without a provenance attestation — attestations need a public repository, or GitHub Enterprise Cloud."
 
       # Values reach the shell through env, never through `${{ }}` inside run:,
       # which is substituted as raw text before bash sees it.
+      - if: steps.attest.outcome == 'failure'
+        env:
+          IMAGE: ${{ matrix.image }}
+        run: echo "::warning::$IMAGE published without a provenance attestation — attestations need a public repository, or GitHub Enterprise Cloud."
+
       - name: Summary
         env:
+          IMAGE: ${{ matrix.image }}
           TAGS: ${{ steps.meta.outputs.tags }}
           DIGEST: ${{ steps.build.outputs.digest }}
         run: |
           {
-            echo "### Published"
+            echo "### Published $IMAGE"
             echo
             echo '```'
             echo "$TAGS"

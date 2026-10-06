@@ -62,9 +62,11 @@ arrives, protected requests get `x-rail-status: issuer-unreachable`.
 
 ## Run it beside Envoy
 
-- **The image** is built from [`Dockerfile`](Dockerfile), from the repository
-  root: `docker build -f proxy-envoy-grpc/Dockerfile .`. It runs as uid 10001
-  and serves on `/run/rail/ext.sock`.
+- **The image** is `ghcr.io/datrail/proxy-envoy-grpc`, released with the same
+  versions as `ghcr.io/datrail/proxy`. It is built from
+  [`Dockerfile`](Dockerfile), from the repository root:
+  `docker build -f proxy-envoy-grpc/Dockerfile .`. It runs as uid 10001 and
+  serves on `/run/rail/ext.sock`.
 - **Envoy's config:** start from [`envoy.yaml`](envoy.yaml), the reference
   config. It holds no Rail configuration: the protected hosts and the ticket
   are this service's alone. It listens on 15001 and expects the socket at
