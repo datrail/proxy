@@ -8,7 +8,7 @@ it, and attaches it to what it forwards to the upstreams its config names.
 It comes in two forms:
 
 - **proxy-standalone** is an MCP proxy: it makes every upstream call itself,
-  carrying the agent's own headers as Envoy would.
+  carrying the agent's own headers.
 - **proxy-envoy-grpc** is a service Envoy calls on each of the agent's HTTP
   requests: Envoy forwards the agent's own request, and the service adds the
   ticket to those for protected hosts.
@@ -51,9 +51,9 @@ quiet.
     own business. What neither may forward is an `x-rail` or `x-rail-*`
     header the agent wrote, or any header with `_` in its name, since many
     servers read `x_rail` as `x-rail`.
-  - proxy-standalone removes them itself, from every request it sends
+  - **proxy-standalone** removes them itself, from every request it sends
     upstream, with the plugin on or off.
-  - In proxy-envoy-grpc, the reference Envoy config removes them before
+  - In **proxy-envoy-grpc**, the reference Envoy config removes them before
     calling the service, for every host, and drops every header with `_` in
     its name. For a protected host the service also removes any that remain;
     for any other host it changes nothing, so an Envoy config without that

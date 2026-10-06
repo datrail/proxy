@@ -37,22 +37,6 @@ call upstream, carrying the agent's headers as
   `RAIL_PROXY_TICKET_TIMEOUT_SECONDS`, before the port is bound. A failed fetch
   doesn't stop it: calls then carry `x-rail-status`.
 
-### Where it still differs from the Envoy form
-
-Because it makes the upstream calls itself:
-
-- **One agent call can be several upstream requests**, each with the agent's
-  headers: an MCP handshake (`initialize`, `notifications/initialized`), a
-  `GET` stream, the call, and a `DELETE` closing the session.
-- **The transport's headers are the proxy client's own**: `host`, `accept`,
-  `content-type`, `content-length`, `mcp-session-id`, `mcp-protocol-version`,
-  `connection` and `accept-encoding`.
-- **A header the agent repeats** reaches the upstream once, with its last
-  value.
-- **The upstream's response headers** don't reach the agent: the proxy
-  answers in its own MCP session.
-- **No `X-Forwarded-Proto`**, which Envoy adds on its own.
-
 ## Run
 
 The main README's [quick start](../README.md#quick-start) runs the image

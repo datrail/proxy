@@ -954,24 +954,13 @@ XRAIL_UPSTREAM_HEADER = "x-rail-upstream"
 
 
 def is_xrail_header(name: str) -> bool:
-    """Whether `name` is in the x-rail namespace: `x-rail`, or any `x-rail-*`.
-
-    Only this proxy writes that namespace, so an agent's header in it never
-    reaches an upstream, whichever interface forwards the request.
-    """
+    """Whether `name` is in the x-rail namespace: `x-rail`, or any `x-rail-*`."""
     name = name.lower()
     return name == XRAIL_HEADER or name.startswith(XRAIL_HEADER + "-")
 
 
 def agent_header_may_cross(name: str) -> bool:
-    """Whether an agent's header may reach an upstream, in every interface.
-
-    Not an x-rail one, and no `_` in the name: many servers read `_` as `-`, so
-    `x_rail` would reach one as `x-rail`. The Envoy interface gets the second
-    from Envoy itself (`headers_with_underscores_action: DROP_HEADER` in its
-    reference config); an interface that forwards the headers itself applies
-    both here.
-    """
+    """Whether an agent's header may reach an upstream, in every interface."""
     return not is_xrail_header(name) and "_" not in name
 
 

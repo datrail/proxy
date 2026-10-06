@@ -76,10 +76,10 @@ into a `certs` volume and stays up, healthy once the files are written.
 plane and a proxy whose ticket lapsed are different states, and the difference
 is what lets a gateway tell them apart.
 
-Every proxy is driven with the same headers as the Envoy stack: a forged
-`x-rail`, `x-rail-status`, `x-rail-foo`, `x_rail` and `x_rail_status`, which
-never cross, and the agent's own `x-trace` and `Authorization`, which cross as
-sent (`AGENT_HEADERS` in `shared/lib.py`).
+Every proxy is driven with the same headers: a forged `x-rail`,
+`x-rail-status`, `x-rail-foo`, `x_rail` and `x_rail_status`, which never cross,
+and the agent's own `x-trace` and `Authorization`, which cross as sent
+(`AGENT_HEADERS` in `shared/lib.py`).
 
 ### Not covered here
 
