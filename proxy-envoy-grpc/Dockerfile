@@ -27,6 +27,8 @@ WORKDIR /app
 
 # Apache-2.0 asks that recipients get a copy of the licence.
 COPY LICENSE NOTICE ./
+# For reference only: Envoy runs in its own container, and reads its config there.
+COPY proxy-envoy-grpc/envoy.yaml ./
 COPY --from=builder /app/.venv /app/.venv
 ENV PATH="/app/.venv/bin:$PATH"
 

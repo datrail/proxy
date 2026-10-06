@@ -88,7 +88,8 @@ arrives, protected requests get `x-rail-status: issuer-unreachable`.
 - **Envoy's config:** start from [`envoy.yaml`](envoy.yaml), the reference
   config. It holds no Rail configuration: the protected hosts and the ticket
   are this service's alone. It listens on 15001 and expects the socket at
-  `/run/rail/ext.sock`.
+  `/run/rail/ext.sock`. The image holds a copy at `/app/envoy.yaml`:
+  `docker run --rm ghcr.io/datrail/proxy-envoy-grpc cat /app/envoy.yaml`.
 - **Sharing the socket:** mount one volume at `/run/rail` in both containers.
   The socket is `0660`, so Envoy must run as uid 10001 or in group 10001 (the
   official Envoy image takes `ENVOY_GID=10001`).
