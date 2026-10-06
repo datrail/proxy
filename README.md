@@ -87,7 +87,7 @@ version in `.python-version`.
 make init    # uv sync: every member, editable, plus the pinned dev tools
 make test
 make lint    # `make fmt` formats and fixes instead of only checking
-make e2e     # the image against a stubbed Rail Center and upstream
+make e2e     # each image against a stubbed Rail Center and upstream; see e2e/README.md
 ```
 
 ## Related projects

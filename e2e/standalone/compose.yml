@@ -1,0 +1,106 @@
+# The standalone proxy's e2e stack; e2e/README.md says what each service is for.
+#
+#   docker compose -f e2e/standalone/compose.yml up --build --abort-on-container-exit --exit-code-from driver
+#
+# The result is the driver container's exit code.
+
+name: datrail-proxy-e2e-standalone
+
+x-proxy: &proxy
+  build:
+    context: ../..
+    dockerfile: proxy-standalone/Dockerfile
+  volumes:
+    - ./bridge.yaml:/app/standalone/bridge.yaml:ro
+  healthcheck:
+    # /health answers 200 whether or not a ticket is held — failing closed is a
+    # designed state — so this is liveness for every variant alike.
+    test: ["CMD", "python", "-c", "import urllib.request;urllib.request.urlopen('http://localhost:8091/health').read()"]
+    interval: 2s
+    timeout: 3s
+    retries: 15
+
+x-attached: &attached
+  RAIL_PLUGIN_ENABLED: "true"
+  RAIL_CENTER_URL: http://rail-center:8080
+  RAIL_HOST_ID: host-e2e
+
+x-attached-depends: &attached-depends
+  rail-center: {condition: service_healthy}
+  upstream: {condition: service_healthy}
+
+services:
+  rail-center:
+    extends: {file: ../shared/services.yml, service: rail-center}
+
+  # Stands in for an MCP server, and records every request so the driver can
+  # assert on headers rather than on log output.
+  upstream:
+    extends: {file: ../shared/services.yml, service: wiremock}
+    volumes:
+      - ../shared/mcp-mappings:/home/wiremock/mappings:ro
+
+  proxy:
+    <<: *proxy
+    environment:
+      <<: *attached
+      RAIL_SANDBOX_NAME: e2e-sandbox
+    depends_on: *attached-depends
+
+  proxy-unregistered:
+    <<: *proxy
+    environment:
+      <<: *attached
+      RAIL_SANDBOX_NAME: not-a-registered-sandbox
+    depends_on: *attached-depends
+
+  proxy-expired:
+    <<: *proxy
+    environment:
+      <<: *attached
+      RAIL_SANDBOX_NAME: e2e-expired
+    depends_on: *attached-depends
+
+  proxy-issuer-down:
+    <<: *proxy
+    environment:
+      <<: *attached
+      RAIL_SANDBOX_NAME: e2e-issuer-down
+    depends_on: *attached-depends
+
+  proxy-passthrough:
+    <<: *proxy
+    depends_on:
+      upstream: {condition: service_healthy}
+
+  # Asserts the uid the image runs as, which the driver can't see from its own
+  # container. The healthcheck is the assertion: the driver waits on it, so a
+  # wrong uid stops the run before the driver starts. It sleeps rather than
+  # exiting, because an exit trips --abort-on-container-exit.
+  image-user:
+    <<: *proxy
+    # Nothing to flush, and `sleep` does not handle SIGTERM — without this,
+    # teardown waits out the full stop grace period on every run.
+    command: ["sleep", "infinity"]
+    stop_grace_period: 0s
+    healthcheck:
+      test: ["CMD", "sh", "-c", "test \"$(id -u)\" = 10001"]
+      interval: 1s
+      timeout: 2s
+      retries: 3
+
+  # Standard library only, so a stock image runs it with nothing installed.
+  driver:
+    image: python:3.12-slim
+    volumes:
+      - ./driver.py:/e2e/driver.py:ro
+      - ../shared/lib.py:/e2e/lib.py:ro
+    # Unbuffered, so each line shows as it is reached rather than at exit.
+    command: ["python", "-u", "/e2e/driver.py"]
+    depends_on:
+      proxy: {condition: service_healthy}
+      proxy-unregistered: {condition: service_healthy}
+      proxy-expired: {condition: service_healthy}
+      proxy-issuer-down: {condition: service_healthy}
+      proxy-passthrough: {condition: service_healthy}
+      image-user: {condition: service_healthy}

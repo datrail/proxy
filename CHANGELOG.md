@@ -26,7 +26,8 @@ Released versions correspond to published images at `ghcr.io/datrail/proxy`.
 - `GET /health`, reporting whether the plugin is on and what is held — a
   fingerprint and an expiry, never the ticket and never the issuer's address.
 - `spec/ticket-fetch.schema.json`, pinning the fetch response this proxy parses.
-- `e2e/`: the stack in containers, asserting what reaches an upstream.
+- `e2e/`: a stack in containers per interface, asserting what reaches an upstream
+  in each ticket state: held, not found, expired, issuer unreachable and off.
 - Container images with an SBOM. A signed build-provenance attestation is
   attached where the repository is public — attestation requires that or
   GitHub Enterprise Cloud — and a release that cannot produce one warns

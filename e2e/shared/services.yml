@@ -1,0 +1,24 @@
+# The services every e2e stack has in common, pulled into each stack's
+# compose.yml with `extends: {file: ../shared/services.yml, service: …}`.
+# Relative paths here resolve against this directory.
+
+services:
+  wiremock:
+    image: wiremock/wiremock:3.9.1
+    # Every stub set templates its answers: Rail Center's expires_at, and the
+    # JSON-RPC id and protocolVersion the MCP upstream echoes back.
+    command: ["--global-response-templating"]
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8080/__admin/health"]
+      interval: 2s
+      timeout: 3s
+      retries: 15
+
+  # Stands in for Rail Center. Query-parameter matching gives every ticket case
+  # with no code: e2e-sandbox gets a ticket, e2e-expired one that has lapsed,
+  # e2e-issuer-down a 500, and anything else an empty list — which is
+  # authoritative, not an error.
+  rail-center:
+    extends: {service: wiremock}
+    volumes:
+      - ./rc-mappings:/home/wiremock/mappings:ro

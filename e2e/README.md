@@ -1,87 +1,81 @@
-# The end-to-end stack
+# The end-to-end stacks
 
-Three proxies, a stubbed Rail Center, a stubbed MCP upstream and a driver that
-asserts what actually crossed the wire.
+One stack per interface. Each has proxies, a stubbed Rail Center, a stubbed MCP
+upstream and a driver that asserts what actually crossed the wire.
 
 ```sh
-docker compose -f e2e/compose.yml up --build --abort-on-container-exit --exit-code-from driver
+make e2e              # every stack in turn
+make e2e-standalone   # one stack
 ```
 
-The exit code is the result. Nothing outside this directory is needed — no Rail
-Center, no gateway, no registry account — which is what makes this the
-quickstart as well as the test.
+The result is the `driver` container's exit code, which `--exit-code-from`
+passes through `docker compose up` and `make`. Nothing outside this directory
+is needed — no Rail Center, no gateway, no registry account — which is what
+makes this the quickstart as well as the test.
+
+```
+e2e/
+  shared/       what every stack uses: the stubs, the base services, the driver's helpers
+  standalone/   the standalone proxy's stack
+```
 
 ## What it proves that the unit suite cannot
 
-The unit suite drives the application in-process, through an ASGI transport and a mock
-HTTP transport. That covers the behaviour thoroughly and cannot cover any of
-this:
+The unit suites drive each interface in-process, with the network mocked. They
+cannot show:
 
-- the **image** runs — the entrypoint, the non-root user, the mounted config path
-- a **real socket**: a real uvicorn, a real DNS name, a real TCP connection
-- FastMCP's client completing a **real handshake over the wire**
-- the three ticket states side by side in **one network**, which is how they are
+- the **image** runs — the entrypoint, the non-root user, the mounted config
+- a **real socket**: a real server, a real DNS name, a real TCP connection
+- an MCP client completing a **real handshake over the wire**
+- the ticket states side by side in **one network**, which is how they are
   actually told apart
 
-## The three proxies
+State transitions (rotation, expiry, Rail Center going down) are covered by the
+core's unit tests, so each state here is its own proxy, standing still.
+
+## Shared
+
+Rail Center's stubs (`rc-mappings/`) match on `sandbox_name`:
+
+| `sandbox_name` | Rail Center answers | The proxy reports |
+|---|---|---|
+| `e2e-sandbox` | a ticket, `e2e-opaque-token`, six hours from expiry | `x-rail: e2e-opaque-token` |
+| `e2e-expired` | a ticket whose `expires_at` was an hour ago | `x-rail-status: expired` |
+| `e2e-issuer-down` | a 500 | `x-rail-status: issuer-unreachable` |
+| anything else | an empty list — authoritative, not an error | `x-rail-status: not-found` |
+
+`expires_at` is templated relative to now, so the fixtures don't rot.
+
+The MCP upstream's stubs (`mcp-mappings/`) answer `initialize`,
+`notifications/initialized`, `tools/list` and `tools/call`, plus two that are
+easy to miss: the client opens `GET /mcp` (405 is a valid answer) and sends
+`DELETE /mcp` when it closes.
+
+The driver's assertions read WireMock's request journal, not logs. The helpers
+are in `lib.py`, standard library only, and its comments record the WireMock
+pitfalls they guard against.
+
+## Standalone
 
 | Service | Configuration | What the upstream should see |
 |---|---|---|
 | `proxy` | registered as `e2e-sandbox` | `x-rail: e2e-opaque-token` |
 | `proxy-unregistered` | a sandbox name Rail Center does not know | `x-rail-status: not-found`, no identity |
-| `proxy-passthrough` | no RailXia configuration at all | neither header |
+| `proxy-expired` | `e2e-expired`: the only ticket has lapsed | `x-rail-status: expired`, no identity |
+| `proxy-issuer-down` | `e2e-issuer-down`: Rail Center answers 500 | `x-rail-status: issuer-unreachable`, no identity; it still starts and reports healthy |
+| `proxy-passthrough` | sets nothing: the plugin is off by default | neither header |
+| `image-user` | the same image, sleeping | nothing: its healthcheck asserts the uid, and the driver waits on it |
 
-The third is the one worth understanding: it is *not* the fail-closed path. A
-proxy with no control plane and a proxy whose ticket lapsed are different
-states, and the difference is what lets a gateway tell them apart.
+`proxy-passthrough` is *not* the fail-closed path. A proxy with no control
+plane and a proxy whose ticket lapsed are different states, and the difference
+is what lets a gateway tell them apart.
 
-The driver also sends its own `x-rail: forged-by-the-sandbox` and asserts it
-never reaches the upstream. The proxy is the boundary; an identity it did not
-issue does not cross it.
+Every proxy is driven with a forged `x-rail` and a forged `Authorization`, and
+the driver asserts neither reaches the upstream.
 
-## Why WireMock is enough
+### Not covered here
 
-The upstream is configuration, not code. FastMCP's client accepts
-`Content-Type: application/json` and does not require SSE framing, so four
-body-matched stubs answer `initialize`, `notifications/initialized`,
-`tools/list` and `tools/call`. Two more are needed and are easy to miss: the
-client opens `GET /mcp` (405 is a valid answer) and sends `DELETE /mcp` when it
-closes. Unmatched, either one is a request the journal records as an error.
-
-No session state is needed. Returning `Mcp-Session-Id` once on `initialize` is
-enough — the client echoes it on everything after.
-
-`--global-response-templating` is what keeps `expires_at` six hours ahead of
-now. A hardcoded stamp would pass today and fail silently on whatever day it
-went past. The helper carries `timezone='UTC'` for a second reason: the `Z` in
-its format string is a literal rather than an offset, so without it the stamp
-renders in the container's local zone while claiming to be UTC. Any zone west
-of UTC−6 then hands the proxy a ticket that already expired, and the suite
-fails naming the proxy. `rail-center` runs at `TZ: Pacific/Honolulu` for that
-reason: on a default-UTC JVM the argument is unobservable and dropping it
-changes nothing, so the suite runs where dropping it fails.
-
-## Three things about the assertions
-
-They are WireMock's request journal, not log scraping. The question is what
-crossed the wire, and only the journal answers it. Three details cost real time
-to find, so they are written down rather than rediscovered:
-
-- **Every admin call carries `curl -f`.** The journal reset moved between
-  WireMock majors — `POST /__admin/requests/reset` is gone in 3.x, `DELETE
-  /__admin/requests` replaced it. Without `-f` the 404 is silent, the reset
-  quietly does nothing, and the next assertion counts headers a *previous*
-  container attached. It passes, for the wrong reason.
-- **Presence is `{"matches": ".*"}`.** There is no `present` matcher, and
-  `{"absent": false}` is not one — it reads as no constraint at all, so every
-  count returns the total and every absence assertion passes.
-- **The count is read with whitespace stripped.** WireMock pretty-prints
-  `"count" : 7`, so a pattern written against `"count":7` never matches.
-
-## Not covered here
-
-`RAIL_AUTH_MODE=bearer` — the mode the proxy uses to authenticate *to* Rail
-Center. Proving it over this stack's plaintext `http` would need
-`RAIL_PROXY_ALLOW_INSECURE_CREDENTIAL=true`, since the proxy refuses to send a
-credential in the clear. Putting that flag in the quickstart would teach it as
-normal, so `bearer` is left to the unit suite, where it is covered without one.
+`RAIL_AUTH_MODE=bearer`, which authenticates the proxy *to* Rail Center. Over
+this stack's plaintext `http` it would need
+`RAIL_PROXY_ALLOW_INSECURE_CREDENTIAL=true`, which the quickstart shouldn't
+teach, so the unit suite covers it instead.

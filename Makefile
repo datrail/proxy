@@ -1,4 +1,4 @@
-.PHONY: init fmt lint test e2e
+.PHONY: init fmt lint test e2e e2e-standalone
 
 # CI runs these same targets.
 
@@ -19,7 +19,10 @@ lint:
 test:
 	uv run pytest -q
 
-# The image, a stubbed control plane and a stubbed upstream; asserts what reached the wire.
-e2e:
-	docker compose -f e2e/compose.yml up --build \
+# Every e2e stack in turn; each is an image, a stubbed control plane and a
+# stubbed upstream, and asserts what reached the wire.
+e2e: e2e-standalone
+
+e2e-standalone:
+	docker compose -f e2e/standalone/compose.yml up --build \
 		--abort-on-container-exit --exit-code-from driver

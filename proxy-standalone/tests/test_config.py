@@ -1066,7 +1066,7 @@ def test_the_version_is_settled_before_the_upstreams_are_parsed(write_config):
 _REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
 SHIPPED_CONFIGS = (
     _REPO_ROOT / "proxy-standalone/bridge.yaml.example",
-    _REPO_ROOT / "e2e" / "bridge.yaml",
+    _REPO_ROOT / "e2e/standalone/bridge.yaml",
 )
 
 
@@ -1078,10 +1078,10 @@ def test_a_config_this_repository_ships_is_one_this_proxy_reads(
 ):
     """The version line is startup-fatal, and these are the two files an
     instruction hands someone: the README's quick start copies the example and
-    mounts it, and `e2e/compose.yml` mounts the other. Wrong or missing, the
-    first is a container that stops and the second is a warning nobody reads —
-    neither of which any other test sees, because nothing else loads a file that
-    is not written by the test itself."""
+    mounts it, and `e2e/standalone/compose.yml` mounts the other. Wrong or
+    missing, the first is a container that stops and the second is a warning
+    nobody reads — neither of which any other test sees, because nothing else
+    loads a file that is not written by the test itself."""
     monkeypatch.setenv("RAIL_PROXY_CONFIG_FILE", str(path))
 
     with caplog.at_level("WARNING"):
