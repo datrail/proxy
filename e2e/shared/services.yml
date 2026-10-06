@@ -22,3 +22,21 @@ services:
     extends: {service: wiremock}
     volumes:
       - ./rc-mappings:/home/wiremock/mappings:ro
+
+  # Writes the test CA and the test hosts' certificates into the `certs` volume,
+  # then stays up: a container that exits trips --abort-on-container-exit. It
+  # is healthy once the files are written. A stack that uses it declares the
+  # volume.
+  certs:
+    image: alpine/openssl:3.5.9
+    entrypoint: ["sh", "-c", "sh /certs.sh /certs && exec sleep infinity"]
+    # `sleep` does not handle SIGTERM; nothing to flush.
+    stop_grace_period: 0s
+    healthcheck:
+      test: ["CMD", "test", "-f", "/certs/ca-certificates.crt"]
+      interval: 1s
+      timeout: 2s
+      retries: 30
+    volumes:
+      - ./certs.sh:/certs.sh:ro
+      - certs:/certs

@@ -34,6 +34,8 @@ _RAIL_ENVIRONMENT = (
     "RAIL_PROXY_LOG_LEVEL",
     "RAIL_PROXY_UPSTREAM_TIMEOUT_SECONDS",
     "RAIL_PROXY_CONFIG_FILE",
+    "RAIL_PROXY_PROTECTED_HOSTS",
+    "RAIL_PROXY_EXT_SOCKET",
     # Not RAIL_*, but read on the same path: `_exchange` builds its SSL context
     # with `trust_env=True` even behind a MockTransport, so a shell pointing
     # these at a bundle this machine does not have turns a fifth of the suite

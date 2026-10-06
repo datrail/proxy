@@ -1,0 +1,322 @@
+# The Envoy extension's e2e stack; e2e/README.md says what each service is for.
+#
+#   docker compose -f e2e/envoy-grpc/compose.yml up --build --abort-on-container-exit --exit-code-from driver
+#
+# The result is the driver container's exit code.
+
+name: datrail-proxy-e2e-envoy-grpc
+
+x-ext: &ext
+  build:
+    context: ../..
+    dockerfile: proxy-envoy-grpc/Dockerfile
+  healthcheck:
+    test: ["CMD", "python", "-m", "proxy.envoy_grpc.probe_health"]
+    interval: 1s
+    timeout: 5s
+    retries: 30
+
+x-attached: &attached
+  RAIL_PLUGIN_ENABLED: "true"
+  RAIL_CENTER_URL: http://rail-center:8080
+  RAIL_HOST_ID: host-e2e
+  # Every extension protects the same hosts.
+  RAIL_PROXY_PROTECTED_HOSTS: &protected upstream.test:8443,upstream-agent-port.test,upstream-443.test,http://upstream-plain.test
+
+x-envoy: &envoy
+  image: envoyproxy/envoy:v1.39.2
+  environment:
+    # The image's entrypoint puts its `envoy` user in this group, which is the
+    # one the extension's socket is shared with.
+    ENVOY_GID: "10001"
+  healthcheck:
+    test: ["CMD", "bash", "-c", "</dev/tcp/127.0.0.1/15001"]
+    interval: 1s
+    timeout: 2s
+    retries: 30
+
+# The test CA in place of the system bundle the reference config trusts.
+# nocopy: otherwise Docker fills the empty volume with the image's own
+# /etc/ssl/certs before the certs service has written to it.
+x-test-ca: &test-ca
+  type: volume
+  source: certs
+  target: /etc/ssl/certs
+  read_only: true
+  volume: {nocopy: true}
+
+x-https: &https
+  extends: {file: ../shared/services.yml, service: wiremock}
+  depends_on:
+    certs: {condition: service_healthy}
+
+networks:
+  default:
+  # Where upstream.test is evil: only envoy-misresolved, evil and the driver are
+  # on it. An alias is scoped to its network, so on the default network
+  # upstream.test is still the real upstream for every other Envoy.
+  misresolved:
+
+services:
+  certs:
+    extends: {file: ../shared/services.yml, service: certs}
+
+  rail-center:
+    extends: {file: ../shared/services.yml, service: rail-center}
+
+  # Protected as upstream.test:8443: reached there whatever port the agent
+  # sends. Its journal is read over plain HTTP on 8080, as every server's is.
+  upstream:
+    <<: *https
+    command:
+      - --global-response-templating
+      - --https-port=8443
+      - --https-keystore=/certs/upstream.test.p12
+      - --keystore-type=PKCS12
+      - --keystore-password=password
+      - --key-manager-password=password
+    volumes:
+      - ../shared/mcp-mappings:/home/wiremock/mappings:ro
+      - certs:/certs:ro
+    networks:
+      default:
+        aliases: [upstream.test]
+
+  # Protected as a bare host: reached at the agent's port, 9443, over HTTPS.
+  upstream-agent-port:
+    <<: *https
+    command:
+      - --global-response-templating
+      - --https-port=9443
+      - --https-keystore=/certs/upstream-agent-port.test.p12
+      - --keystore-type=PKCS12
+      - --keystore-password=password
+      - --key-manager-password=password
+    volumes:
+      - ../shared/mcp-mappings:/home/wiremock/mappings:ro
+      - certs:/certs:ro
+    networks:
+      default:
+        aliases: [upstream-agent-port.test]
+
+  # Protected as a bare host: with no port, or :80, reached at HTTPS's 443.
+  upstream-443:
+    <<: *https
+    command:
+      - --global-response-templating
+      - --https-port=443
+      - --https-keystore=/certs/upstream-443.test.p12
+      - --keystore-type=PKCS12
+      - --keystore-password=password
+      - --key-manager-password=password
+    volumes:
+      - ../shared/mcp-mappings:/home/wiremock/mappings:ro
+      - certs:/certs:ro
+    networks:
+      default:
+        aliases: [upstream-443.test]
+
+  # Protected as http://upstream-plain.test: reached over plain HTTP, at the
+  # agent's port.
+  upstream-plain:
+    extends: {file: ../shared/services.yml, service: wiremock}
+    volumes:
+      - ../shared/mcp-mappings:/home/wiremock/mappings:ro
+    networks:
+      default:
+        aliases: [upstream-plain.test]
+
+  # Not protected: reached as the agent sent it.
+  open:
+    extends: {file: ../shared/services.yml, service: wiremock}
+    volumes:
+      - ../shared/mcp-mappings:/home/wiremock/mappings:ro
+    networks:
+      default:
+        aliases: [open.test]
+
+  # HTTPS on 8443, the port upstream.test is protected with, but with a
+  # certificate for evil.test only.
+  evil:
+    <<: *https
+    command:
+      - --global-response-templating
+      - --https-port=8443
+      - --https-keystore=/certs/evil.test.p12
+      - --keystore-type=PKCS12
+      - --keystore-password=password
+      - --key-manager-password=password
+    volumes:
+      - ../shared/mcp-mappings:/home/wiremock/mappings:ro
+      - certs:/certs:ro
+    networks:
+      default:
+        aliases: [evil.test]
+      misresolved:
+        aliases: [upstream.test]
+
+  # One extension per ticket state, each with the Envoy that calls it.
+  ext:
+    <<: *ext
+    environment:
+      <<: *attached
+      RAIL_SANDBOX_NAME: e2e-sandbox
+    volumes: [ext-socket:/run/rail]
+    depends_on: &on-rail-center
+      rail-center: {condition: service_healthy}
+
+  ext-unregistered:
+    <<: *ext
+    environment:
+      <<: *attached
+      RAIL_SANDBOX_NAME: not-a-registered-sandbox
+    volumes: [ext-unregistered-socket:/run/rail]
+    depends_on: *on-rail-center
+
+  ext-expired:
+    <<: *ext
+    environment:
+      <<: *attached
+      RAIL_SANDBOX_NAME: e2e-expired
+    volumes: [ext-expired-socket:/run/rail]
+    depends_on: *on-rail-center
+
+  ext-issuer-down:
+    <<: *ext
+    environment:
+      <<: *attached
+      RAIL_SANDBOX_NAME: e2e-issuer-down
+    volumes: [ext-issuer-down-socket:/run/rail]
+    depends_on: *on-rail-center
+
+  # The plugin off: no Rail Center, the same protected hosts.
+  ext-passthrough:
+    <<: *ext
+    environment:
+      RAIL_PROXY_PROTECTED_HOSTS: *protected
+    volumes: [ext-passthrough-socket:/run/rail]
+
+  envoy:
+    <<: *envoy
+    # After its extension, so the socket volume starts as the extension's
+    # image has /run/rail: owned by uid 10001.
+    depends_on:
+      certs: {condition: service_healthy}
+      ext: {condition: service_healthy}
+    volumes:
+      - ../../proxy-envoy-grpc/envoy.yaml:/etc/envoy/envoy.yaml:ro
+      - ext-socket:/run/rail
+      - *test-ca
+
+  envoy-unregistered:
+    <<: *envoy
+    depends_on:
+      certs: {condition: service_healthy}
+      ext-unregistered: {condition: service_healthy}
+    volumes:
+      - ../../proxy-envoy-grpc/envoy.yaml:/etc/envoy/envoy.yaml:ro
+      - ext-unregistered-socket:/run/rail
+      - *test-ca
+
+  envoy-expired:
+    <<: *envoy
+    depends_on:
+      certs: {condition: service_healthy}
+      ext-expired: {condition: service_healthy}
+    volumes:
+      - ../../proxy-envoy-grpc/envoy.yaml:/etc/envoy/envoy.yaml:ro
+      - ext-expired-socket:/run/rail
+      - *test-ca
+
+  envoy-issuer-down:
+    <<: *envoy
+    depends_on:
+      certs: {condition: service_healthy}
+      ext-issuer-down: {condition: service_healthy}
+    volumes:
+      - ../../proxy-envoy-grpc/envoy.yaml:/etc/envoy/envoy.yaml:ro
+      - ext-issuer-down-socket:/run/rail
+      - *test-ca
+
+  envoy-passthrough:
+    <<: *envoy
+    depends_on:
+      certs: {condition: service_healthy}
+      ext-passthrough: {condition: service_healthy}
+    volumes:
+      - ../../proxy-envoy-grpc/envoy.yaml:/etc/envoy/envoy.yaml:ro
+      - ext-passthrough-socket:/run/rail
+      - *test-ca
+
+  # Calls the registered extension, but resolves upstream.test to evil: it is
+  # only on the misresolved network. It reaches the extension through the
+  # socket volume, so it needs no other network.
+  envoy-misresolved:
+    <<: *envoy
+    depends_on:
+      certs: {condition: service_healthy}
+      ext: {condition: service_healthy}
+    volumes:
+      - ../../proxy-envoy-grpc/envoy.yaml:/etc/envoy/envoy.yaml:ro
+      - ext-socket:/run/rail
+      - *test-ca
+    networks: [misresolved]
+
+  # A socket volume nothing serves on: the callout always fails.
+  envoy-no-ext:
+    <<: *envoy
+    depends_on:
+      certs: {condition: service_healthy}
+    volumes:
+      - ../../proxy-envoy-grpc/envoy.yaml:/etc/envoy/envoy.yaml:ro
+      - no-ext-socket:/run/rail
+      - *test-ca
+
+  # Asserts the uid the extension's image runs as, as standalone's stack does.
+  image-user:
+    <<: *ext
+    command: ["sleep", "infinity"]
+    stop_grace_period: 0s
+    healthcheck:
+      test: ["CMD", "sh", "-c", "test \"$(id -u)\" = 10001"]
+      interval: 1s
+      timeout: 2s
+      retries: 3
+
+  driver:
+    image: python:3.12-slim
+    networks: [default, misresolved]
+    volumes:
+      - ./driver.py:/e2e/driver.py:ro
+      - ../shared/lib.py:/e2e/lib.py:ro
+      # The test CA, for reaching evil.test directly.
+      - certs:/certs:ro
+    # Unbuffered, so each line shows as it is reached rather than at exit.
+    command: ["python", "-u", "/e2e/driver.py"]
+    depends_on:
+      ext: {condition: service_healthy}
+      ext-unregistered: {condition: service_healthy}
+      ext-expired: {condition: service_healthy}
+      ext-issuer-down: {condition: service_healthy}
+      ext-passthrough: {condition: service_healthy}
+      envoy: {condition: service_healthy}
+      envoy-unregistered: {condition: service_healthy}
+      envoy-expired: {condition: service_healthy}
+      envoy-issuer-down: {condition: service_healthy}
+      envoy-passthrough: {condition: service_healthy}
+      envoy-misresolved: {condition: service_healthy}
+      envoy-no-ext: {condition: service_healthy}
+      upstream-agent-port: {condition: service_healthy}
+      upstream-443: {condition: service_healthy}
+      upstream-plain: {condition: service_healthy}
+      evil: {condition: service_healthy}
+      image-user: {condition: service_healthy}
+
+volumes:
+  certs:
+  ext-socket:
+  ext-unregistered-socket:
+  ext-expired-socket:
+  ext-issuer-down-socket:
+  ext-passthrough-socket:
+  no-ext-socket:

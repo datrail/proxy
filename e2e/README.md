@@ -6,6 +6,7 @@ upstream and a driver that asserts what actually crossed the wire.
 ```sh
 make e2e              # every stack in turn
 make e2e-standalone   # one stack
+make e2e-envoy-grpc
 ```
 
 The result is the `driver` container's exit code, which `--exit-code-from`
@@ -17,6 +18,7 @@ makes this the quickstart as well as the test.
 e2e/
   shared/       what every stack uses: the stubs, the base services, the driver's helpers
   standalone/   the standalone proxy's stack
+  envoy-grpc/   the Envoy extension's stack, behind the reference Envoy config
 ```
 
 ## What it proves that the unit suite cannot
@@ -55,6 +57,10 @@ The driver's assertions read WireMock's request journal, not logs. The helpers
 are in `lib.py`, standard library only, and its comments record the WireMock
 pitfalls they guard against.
 
+`certs.sh` writes a test CA and certificates for `upstream.test` and
+`evil.test`, with PKCS12 keystores for WireMock. The `certs` service runs it
+into a `certs` volume and stays up, healthy once the files are written.
+
 ## Standalone
 
 | Service | Configuration | What the upstream should see |
@@ -79,3 +85,44 @@ the driver asserts neither reaches the upstream.
 this stack's plaintext `http` it would need
 `RAIL_PROXY_ALLOW_INSECURE_CREDENTIAL=true`, which the quickstart shouldn't
 teach, so the unit suite covers it instead.
+
+## Envoy extension (`envoy-grpc/`)
+
+The agent's requests go to Envoy on `http://envoy:15001`, with the target in
+`Host`. That is the request an intercepted agent would send, without the
+interception itself, which this stack doesn't test.
+
+Envoy runs the reference config,
+[`proxy-envoy-grpc/envoy.yaml`](../proxy-envoy-grpc/envoy.yaml), with the test
+CA in place of the system bundle, and calls `ext` on a shared unix socket.
+
+Each Envoy runs the same reference config. They differ in the extension they
+call, and `envoy-misresolved` in where it resolves `upstream.test`.
+
+| Service | Configuration | What it should see |
+|---|---|---|
+| `envoy` + `ext` | registered | the ticket on every protected host, over the right scheme and port |
+| `envoy-unregistered` + `ext-unregistered` | a sandbox Rail Center doesn't know | `x-rail-status: not-found`, still over HTTPS |
+| `envoy-expired` + `ext-expired` | `e2e-expired` | `x-rail-status: expired` |
+| `envoy-issuer-down` + `ext-issuer-down` | `e2e-issuer-down` | `x-rail-status: issuer-unreachable` |
+| `envoy-passthrough` + `ext-passthrough` | the plugin off | neither header, still over HTTPS |
+| `envoy-misresolved` | calls `ext`, resolves `upstream.test` to `evil` | a 503: the certificate is for `evil.test` |
+| `envoy-no-ext` | a socket nothing serves on | forwarded with the x-rail headers removed and no status; a protected host isn't routed |
+| `image-user` | the extension's image, sleeping | nothing: its healthcheck asserts the uid |
+
+Every extension protects `upstream.test:8443`, `upstream-agent-port.test`,
+`upstream-443.test` and `http://upstream-plain.test`:
+
+| Server | Serves | Reached by |
+|---|---|---|
+| `upstream` | HTTPS on 8443 | `upstream.test` with no port, `:80`, `:8443` or `:9999`: the entry's port wins |
+| `upstream-agent-port` | HTTPS on 9443 | `upstream-agent-port.test:9443`: a bare entry keeps the agent's port |
+| `upstream-443` | HTTPS on 443 | `upstream-443.test` with no port or `:80`: HTTPS's default |
+| `upstream-plain` | HTTP on 8080 | `upstream-plain.test:8080`: an `http://` entry isn't upgraded |
+| `open` | HTTP on 8080 | `open.test:8080`: not protected, so left alone |
+| `evil` | HTTPS on 8443, certificate for `evil.test` only; `upstream.test` on `envoy-misresolved`'s network | only directly, as the driver's check that it serves TLS |
+
+Every request carries a forged `x-rail`, `x-rail-status`, `x-rail-foo`,
+`x_rail` and `x_rail_status`, which never cross, and the agent's own `x-trace`
+and `Authorization`, which cross as sent. Envoy also adds `X-Forwarded-Proto:
+http` (the agent's side), on both.
