@@ -13,9 +13,10 @@ It comes in two forms:
   requests: Envoy forwards the agent's own request, and the service adds the
   ticket to those for protected hosts.
 
-Two things are worth attacking here. A call can end up attributed to an agent it
-did not come from, so the gateway enforces the wrong policy on it and the audit
-trail records the wrong agent. Or a ticket can escape.
+Two things are worth attacking here:
+- A call can end up attributed to an agent it did not come from, so the gateway
+  enforces the wrong policy on it and the audit trail records the wrong agent.
+- Or a ticket can escape.
 
 ## Reporting a vulnerability
 
@@ -50,21 +51,30 @@ quiet.
   - proxy-envoy-grpc forwards the agent's own headers as sent, by design,
     `Authorization` included: an agent's own credentials for a server are its
     own business. What it must never forward is an `x-rail` or `x-rail-*`
-    header the agent wrote: Envoy removes them before calling the service,
-    and the service removes any that remain. Envoy also drops every header
-    with `_` in its name, since many servers read `x_rail` as `x-rail`. An agent-written `x-rail` header
-    reaching an upstream through Envoy is a report.
+    header the agent wrote. The reference Envoy config removes them before
+    calling the service, for every host. For a protected host the service
+    also removes any that remain; for any other host it changes nothing, so
+    an Envoy config without that removal forwards them. Envoy also drops
+    every header with `_` in its name, since many servers read `x_rail` as
+    `x-rail`. An agent-written `x-rail` header reaching an upstream through
+    the reference config is a report.
 - **Ticket handling.** A ticket is a bearer credential for its lifetime. It must
   not reach a log, an error message, a crash dump, or any host other than the
   upstream it was attached for. It is logged as a digest prefix and never as a
   value, a ticket that could not be a header value is refused rather than
   stored, and redirects are not followed — an upstream answering `307` cannot
   name a host to deliver it to.
-- **The upstream leg.** The ticket goes out on every forwarded call. Redirects
-  are not followed and no ambient proxy setting is read, so nothing but the
-  configured address receives it; a plaintext upstream is warned about rather
-  than refused, because an http upstream on a private network is an ordinary
-  deployment. A ticket reaching a host the config did not name is a report.
+- **The upstream leg.** The ticket goes out on every forwarded call to an
+  upstream the config names, and redirects are not followed. A plaintext
+  upstream is warned about rather than refused, because an http upstream on a
+  private network is an ordinary deployment. A ticket reaching a host the
+  config did not name is a report.
+  - **proxy-standalone** dials the URLs its bridge file names and reads no
+    ambient proxy setting, so nothing but the configured address receives it.
+  - **proxy-envoy-grpc** attaches it only to a protected host, at the address
+    Envoy resolves for that name, over TLS checked against that name unless
+    the entry says `http://`. An entry without a port sends it to whatever
+    port the agent names on that host.
 - **The control-plane fetch.** It carries a credential out and a ticket back,
   so it refuses to send one over plaintext to anything but loopback, reads no
   ambient proxy setting, caps and refuses to decompress what comes back, and

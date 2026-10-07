@@ -4,12 +4,30 @@
 request, and it adds the `x-rail` headers to requests for protected hosts. See
 the [main README](../README.md) for the whole.
 
-## How it works
+## Architecture
+
+```mermaid
+flowchart LR
+  agent["Agent"] -->|"HTTP, the target in Host"| strip
+  subgraph envoy["Envoy, reference config"]
+    strip["header_mutation: removes x-rail and x-rail-*"] --> authz["ext_authz"]
+    authz --> route{"route on x-rail-upstream"}
+  end
+  authz <-->|"Check, on a unix socket"| ext["proxy-envoy-grpc"]
+  center["Rail Center"] -->|"ticket for host plus sandbox"| ext
+  route -->|"tls"| tls["TLS dynamic forward proxy"]
+  route -->|"plain, or none"| plain["plain dynamic forward proxy"]
+  tls --> protected["protected host, over HTTPS"]
+  plain --> other["a protected http:// host, or any other host"]
+```
 
 The agent's HTTP traffic goes through Envoy, and Envoy calls this service
 (ext_authz, on a unix socket) for every request before forwarding it. Envoy
 forwards the agent's own request, rather than building a new one as
-[proxy-standalone](../proxy-standalone/README.md) does.
+[proxy-standalone](../proxy-standalone/README.md#architecture) does. The
+service answers with the headers to set and remove; for a protected host that
+includes `x-rail-upstream`, which picks the route, and `:authority`, which says
+where to connect.
 
 Before the call, Envoy removes any `x-rail` or `x-rail-*` header the agent
 sent. The service then looks at the request's host:
@@ -62,13 +80,16 @@ arrives, protected requests get `x-rail-status: issuer-unreachable`.
 
 ## Run it beside Envoy
 
-- **The image** is built from [`Dockerfile`](Dockerfile), from the repository
-  root: `docker build -f proxy-envoy-grpc/Dockerfile .`. It runs as uid 10001
-  and serves on `/run/rail/ext.sock`.
+- **The image** is `ghcr.io/datrail/proxy-envoy-grpc`, released with the same
+  versions as `ghcr.io/datrail/proxy`. It is built from
+  [`Dockerfile`](Dockerfile), from the repository root:
+  `docker build -f proxy-envoy-grpc/Dockerfile .`. It runs as uid 10001 and
+  serves on `/run/rail/ext.sock`.
 - **Envoy's config:** start from [`envoy.yaml`](envoy.yaml), the reference
   config. It holds no Rail configuration: the protected hosts and the ticket
   are this service's alone. It listens on 15001 and expects the socket at
-  `/run/rail/ext.sock`.
+  `/run/rail/ext.sock`. The image holds a copy at `/app/envoy.yaml`:
+  `docker run --rm ghcr.io/datrail/proxy-envoy-grpc cat /app/envoy.yaml`.
 - **Sharing the socket:** mount one volume at `/run/rail` in both containers.
   The socket is `0660`, so Envoy must run as uid 10001 or in group 10001 (the
   official Envoy image takes `ENVOY_GID=10001`).
