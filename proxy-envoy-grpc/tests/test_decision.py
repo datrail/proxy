@@ -48,10 +48,9 @@ def test_a_protected_request_matches_every_row_of_the_contract(monkeypatch, case
 
     for name, value in case.expected.items():
         assert sent.get(name) == value
-    # The table's forged rows also expect `authorization` to be absent, as
-    # standalone sends none of the agent's headers. This interface leaves
-    # every header that isn't an x-rail one as the agent sent it.
-    assert not set(sent) & (case.absent - {"authorization"})
+    for name, value in case.forwarded.items():
+        assert sent.get(name) == value
+    assert not set(sent) & case.absent
     agents_own = {k: v for k, v in agent.items() if not k.startswith("x-rail")}
     assert agents_own.items() <= sent.items()
 

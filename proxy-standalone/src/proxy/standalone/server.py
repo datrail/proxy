@@ -7,11 +7,13 @@ What this module holds is the path a request travels, the configuration behind
 it, and the wiring that puts this proxy's own `x-rail` ticket on everything it
 forwards. Obtaining and holding that ticket is `xrail_auth`'s.
 
-It is also the boundary: no header the agent supplies reaches an upstream.
+It is also the boundary for the x-rail namespace: the agent's own headers reach
+an upstream, as through the Envoy interface, but never an `x-rail` one.
 """
 
 import logging
 import os
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
@@ -36,6 +38,7 @@ from proxy.core.settings import (
 from proxy.core.xrail_auth import (
     TicketHolder,
     XRailInjector,
+    agent_header_may_cross,
     redact_credentials,
 )
 
@@ -267,8 +270,37 @@ def _clip(value: object, limit: int = 80) -> str:
     return text if len(text) <= limit else text[:limit] + "…"
 
 
+# The agent's headers that belong to its own connection to this proxy, not to
+# the request: the proxy's client sends its own. `mcp-*` is the agent's MCP
+# session with this proxy, `last-event-id` resumes the agent's stream from this
+# proxy, and `accept-encoding` is what the agent can decode, while it is this
+# proxy's client that decodes the upstream's answer.
+_THIS_HOP = frozenset({"accept-encoding", "last-event-id"})
+
+
+def forwardable(headers: Mapping[str, str]) -> dict[str, str]:
+    """The agent's headers that may reach an upstream.
+
+    Every header except the x-rail ones and any with `_` in its name, which no
+    interface forwards (`agent_header_may_cross`), and the ones that belong to
+    this hop rather than the request. fastmcp has already left out the
+    transport's own (`host`, `content-length`, `mcp-session-id`, …).
+    """
+    return {
+        name: value
+        for name, value in headers.items()
+        if agent_header_may_cross(name)
+        and not name.lower().startswith("mcp-")
+        and name.lower() not in _THIS_HOP
+    }
+
+
 def upstream_client(**kwargs: Any) -> httpx.AsyncClient:
     """The client every mount dials its upstream with.
+
+    The agent's headers fastmcp hands it are filtered (`forwardable`), so the
+    x-rail namespace reaches an upstream only as the injector writes it, with
+    the plugin off as much as on.
 
     Three overrides. Two are about where the ticket may end up — it is on every
     request this client sends, so anything that changes the destination hands it
@@ -290,6 +322,8 @@ def upstream_client(**kwargs: Any) -> httpx.AsyncClient:
     roots, so the context is built separately — otherwise shutting out the first
     would also shut out `SSL_CERT_FILE`.
     """
+    if kwargs.get("headers") is not None:
+        kwargs = {**kwargs, "headers": forwardable(kwargs["headers"])}
     return httpx.AsyncClient(
         **{
             **kwargs,
@@ -336,19 +370,11 @@ def build_gateway(holder: TicketHolder | None) -> FastMCP:
             name=f"proxy-{srv['name']}",
         )
 
-        # After `create_proxy`, not before: it mutates the transport it is
-        # handed, so setting this first is silently undone. The line reads like
-        # ordinary transport configuration and moving it up to the constructor
-        # is the natural tidy-up, which is why the order is stated here.
-        #
-        # `create_proxy` turns on incoming-header forwarding, which is wrong for
-        # this component in the one way that matters: the sandbox could set
-        # `x-rail` itself and have it arrive upstream unchanged, so the identity
-        # the proxy exists to assert would be supplied by the caller it exists
-        # to identify. `authorization` rides the same path, re-included by
-        # fastmcp rather than stripped. The proxy is the boundary; nothing the
-        # agent sends crosses it.
-        transport.forward_incoming_headers = False
+        # `create_proxy` turns on fastmcp's incoming-header forwarding, so
+        # each upstream request carries the headers of the agent request that
+        # caused it, as through the Envoy interface. `upstream_client` filters
+        # them: the x-rail namespace reaches an upstream only as the injector
+        # writes it.
 
         # Always namespaced, even with one upstream: two upstreams each with a
         # `search` tool would be indistinguishable without it, and namespacing

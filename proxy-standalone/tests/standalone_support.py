@@ -7,6 +7,26 @@ import httpx
 
 MCP_ACCEPT = "application/json, text/event-stream"
 
+# Every header the proxy's own HTTP client puts on a request upstream, before
+# the agent's forwarded headers and the x-rail one are added. `cache-control`
+# is only on the `GET` stream the client opens; one set covers every request,
+# since a name appearing where it shouldn't is what these sets exist to catch,
+# not which of the client's requests carries it.
+CLIENT_HEADERS = frozenset(
+    {
+        "host",
+        "accept",
+        "accept-encoding",
+        "connection",
+        "user-agent",
+        "content-length",
+        "content-type",
+        "mcp-protocol-version",
+        "mcp-session-id",
+        "cache-control",
+    }
+)
+
 
 def _upstream_handler(seen: list[dict[str, Any]]):
     """An MCP server good enough to complete a handshake, recording every hit.

@@ -21,12 +21,16 @@ flowchart LR
 ```
 
 The agent speaks MCP to the proxy, and the proxy's own MCP clients make every
-call upstream. Nothing of the agent's request crosses but the call itself:
+call upstream, carrying the agent's headers as
+[proxy-envoy-grpc](../proxy-envoy-grpc/README.md) does:
 
-- **None of the agent's headers** reach an upstream, `x-rail` and
-  `Authorization` included. What arrives is the client's own headers, plus
-  `x-rail` with the ticket, or `x-rail-status` with the reason there is none,
-  or neither when the plugin is off.
+- **The agent's own headers** cross on every upstream request its call
+  causes, `Authorization` included. None in the x-rail namespace (`x-rail`,
+  `x-rail-*`) ever does, nor any with `_` in its name, nor those about the
+  agent's own connection to the proxy (`mcp-*`, `last-event-id`,
+  `accept-encoding`). The proxy adds `x-rail` with the ticket, or
+  `x-rail-status` with the reason there is none, or neither when the plugin is
+  off.
 - **Only the bridge file's upstreams** get the ticket. Redirects are not
   followed, and no ambient proxy setting is read.
 - **Startup waits for the first fetch**, bounded by

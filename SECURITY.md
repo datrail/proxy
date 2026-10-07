@@ -7,8 +7,8 @@ it, and attaches it to what it forwards to the upstreams its config names.
 
 It comes in two forms:
 
-- **proxy-standalone** is an MCP proxy: it makes every upstream call itself
-  and forwards none of the agent's own headers.
+- **proxy-standalone** is an MCP proxy: it makes every upstream call itself,
+  carrying the agent's own headers.
 - **proxy-envoy-grpc** is a service Envoy calls on each of the agent's HTTP
   requests: Envoy forwards the agent's own request, and the service adds the
   ticket to those for protected hosts.
@@ -46,18 +46,20 @@ quiet.
   gave it, and anything that gets one past the boundary defeats the whole chain
   and would show up nowhere in the logs as an error. This is the most valuable
   thing to attack and the most valuable thing to report.
-  - proxy-standalone forwards no header the agent supplies — every one, not a
-    list of names.
-  - proxy-envoy-grpc forwards the agent's own headers as sent, by design,
+  - Both forms forward the agent's own headers as sent, by design,
     `Authorization` included: an agent's own credentials for a server are its
-    own business. What it must never forward is an `x-rail` or `x-rail-*`
-    header the agent wrote. The reference Envoy config removes them before
-    calling the service, for every host. For a protected host the service
-    also removes any that remain; for any other host it changes nothing, so
-    an Envoy config without that removal forwards them. Envoy also drops
-    every header with `_` in its name, since many servers read `x_rail` as
-    `x-rail`. An agent-written `x-rail` header reaching an upstream through
-    the reference config is a report.
+    own business. What neither may forward is an `x-rail` or `x-rail-*`
+    header the agent wrote, or any header with `_` in its name, since many
+    servers read `x_rail` as `x-rail`.
+  - **proxy-standalone** removes them itself, from every request it sends
+    upstream, with the plugin on or off.
+  - In **proxy-envoy-grpc**, the reference Envoy config removes them before
+    calling the service, for every host, and drops every header with `_` in
+    its name. For a protected host the service also removes any that remain;
+    for any other host it changes nothing, so an Envoy config without that
+    removal forwards them.
+  - An agent-written `x-rail` header reaching an upstream, through
+    proxy-standalone or through the reference Envoy config, is a report.
 - **Ticket handling.** A ticket is a bearer credential for its lifetime. It must
   not reach a log, an error message, a crash dump, or any host other than the
   upstream it was attached for. It is logged as a digest prefix and never as a

@@ -6,9 +6,10 @@ import urllib.error
 import urllib.request
 
 from lib import (
+    AGENT_HEADERS,
     ANY_XRAIL,
     FORGED,
-    FORGED_HEADERS,
+    FORGED_STATUS,
     check,
     count,
     drive,
@@ -18,6 +19,7 @@ from lib import (
     posts,
     present,
     reset_journal,
+    the_agents_own_headers_cross,
     unmatched,
 )
 
@@ -28,18 +30,6 @@ UPSTREAM_443 = "http://upstream-443:8080"
 PLAIN = "http://upstream-plain:8080"
 OPEN = "http://open:8080"
 EVIL = "http://evil:8080"
-
-# Sent with every request besides the forged headers: four more x-rail ones,
-# two spelled with `_` for upstreams that read it as `-`, which never cross,
-# and one of the agent's own, which crosses as sent.
-AGENT_HEADERS = {
-    **FORGED_HEADERS,
-    "x-rail-status": "forged-by-the-sandbox",
-    "x-rail-foo": "forged-by-the-sandbox",
-    "x_rail": "forged-by-the-sandbox",
-    "x_rail_status": "forged-by-the-sandbox",
-    "x-trace": "the-agents-own",
-}
 
 
 def envoy(name):
@@ -72,23 +62,6 @@ def send(via, target, path="/mcp", method="POST"):
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, *args):
         return None
-
-
-def the_agents_own_headers_cross(base):
-    expect(
-        "the agent's own header crosses as sent",
-        "some",
-        count(equal_to("x-trace", "the-agents-own"), base),
-    )
-    expect(
-        "so does its authorization",
-        "some",
-        count(equal_to("authorization", "Bearer forged-by-the-sandbox"), base),
-    )
-    expect("no forged x-rail-foo crosses", "none", count(present("x-rail-foo"), base))
-    expect("nor x_rail", "none", count(present("x_rail"), base))
-    expect("nor x_rail_status", "none", count(present("x_rail_status"), base))
-    expect("every request matched a stub", "none", unmatched(base))
 
 
 def ticketed(base, scheme="https"):
@@ -137,7 +110,7 @@ for via, reason in [
     expect(
         "the sandbox's own x-rail-status never crosses",
         "none",
-        count(equal_to("x-rail-status", "forged-by-the-sandbox"), UPSTREAM),
+        count(FORGED_STATUS, UPSTREAM),
     )
     the_agents_own_headers_cross(UPSTREAM)
 

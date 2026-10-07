@@ -1,16 +1,17 @@
 """What goes out with a request: the x-rail headers, decided once for every
-interface, and the agent headers an interface that forwards may let through."""
+interface."""
 
 import pytest
 
 from core_support import wound_holder, xrail_params
 from proxy.core.xrail_auth import (
-    ALLOWED_AGENT_HEADERS,
     XRAIL_HEADER,
     XRAIL_STATUS_HEADER,
     XRAIL_UPSTREAM_HEADER,
     TicketHeaders,
     XRailInjector,
+    agent_header_may_cross,
+    is_xrail_header,
     outbound_headers,
     token_fingerprint,
 )
@@ -76,17 +77,6 @@ def test_a_missing_ticket_is_warned_about_once_per_outage(caplog):
     assert len(warnings) == 2
 
 
-def test_the_allowlist_lets_no_credential_or_rail_header_through():
-    """An agent can't send its own credentials to a protected upstream through
-    any interface, and only this proxy writes the x-rail namespace."""
-    assert all(name == name.lower() for name in ALLOWED_AGENT_HEADERS)
-    assert (
-        not {"authorization", "proxy-authorization", "cookie"} & ALLOWED_AGENT_HEADERS
-    )
-    assert not [n for n in ALLOWED_AGENT_HEADERS if n.startswith("x-rail")]
-    assert not [n for n in ALLOWED_AGENT_HEADERS if n.startswith(":")]
-
-
 @pytest.mark.parametrize("case", xrail_params("core"))
 def test_the_decision_matches_every_row_of_the_contract(case):
     """The decision alone, before any interface applies it. The agent's own
@@ -96,3 +86,29 @@ def test_the_decision_matches_every_row_of_the_contract(case):
 
     assert decided == dict(case.expected)
     assert not set(decided) & case.absent
+
+
+@pytest.mark.parametrize(
+    "name", ["x-rail", "x-rail-status", "x-rail-upstream", "x-rail-foo", "X-Rail"]
+)
+def test_the_x_rail_namespace_is_x_rail_and_every_x_rail_header(name):
+    assert is_xrail_header(name)
+    assert not agent_header_may_cross(name)
+
+
+@pytest.mark.parametrize("name", ["x-railway", "x-rails", "rail", "x-trace"])
+def test_a_name_that_only_starts_like_x_rail_is_not_in_it(name):
+    assert not is_xrail_header(name)
+
+
+@pytest.mark.parametrize("name", ["x_rail", "x_rail_status", "X_Trace", "a_b"])
+def test_a_name_with_an_underscore_never_crosses(name):
+    """Many servers read `_` as `-`, so `x_rail` would reach one as `x-rail`."""
+    assert not agent_header_may_cross(name)
+
+
+@pytest.mark.parametrize(
+    "name", ["authorization", "cookie", "user-agent", "x-trace", "X-Trace"]
+)
+def test_the_agents_other_headers_may_cross(name):
+    assert agent_header_may_cross(name)

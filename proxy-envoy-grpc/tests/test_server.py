@@ -92,8 +92,9 @@ async def test_every_row_of_the_contract(monkeypatch, socket_path, case):
     sent = _applied(agent, response)
     for name, value in case.expected.items():
         assert sent[name] == value
-    # The agent's headers other than x-rail ones cross as sent.
-    assert not set(sent) & (case.absent - {"authorization"})
+    for name, value in case.forwarded.items():
+        assert sent.get(name) == value
+    assert not set(sent) & case.absent
     agents_own = {k: v for k, v in agent.items() if not k.startswith("x-rail")}
     assert agents_own.items() <= sent.items()
 
