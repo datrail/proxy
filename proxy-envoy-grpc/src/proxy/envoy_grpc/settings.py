@@ -12,14 +12,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from proxy.core.settings import (
-    ConfigError,
-    refuse_a_credential_in_the_url,
-    warn_if_in_the_clear,
-)
+from proxy.core.settings import ConfigError, warn_if_in_the_clear
 
 _PROTECTED_HOSTS = "RAIL_PROXY_PROTECTED_HOSTS"
 _DEFAULT_SOCKET = Path("/run/rail/ext.sock")
+
+_ENTRY_FORMAT = "[http(s)://]host[:port]"
 
 _HOSTNAME = re.compile(r"[a-z0-9_-]+(\.[a-z0-9_-]+)*")
 
@@ -46,7 +44,11 @@ def _normalize_host(host: str) -> str:
 
 
 def _refuse(entry: str, why: str) -> ConfigError:
-    return ConfigError(f"{_PROTECTED_HOSTS}: {entry!r} {why}")
+    return _refuse_without_entry(f"{entry!r} {why}")
+
+
+def _refuse_without_entry(message: str) -> ConfigError:
+    return ConfigError(f"{_PROTECTED_HOSTS}: {message}; an entry is {_ENTRY_FORMAT}")
 
 
 def _parse(entry: str, plugin_on: bool) -> ProtectedHost:
@@ -55,18 +57,11 @@ def _parse(entry: str, plugin_on: bool) -> ProtectedHost:
     except ValueError:
         # Don't include the entry or the original error message: either might
         # contain a credential, since some of urlsplit's errors quote the netloc.
-        raise ConfigError(
-            f"{_PROTECTED_HOSTS}: an entry cannot be parsed as a host, with an "
-            "optional scheme and port"
-        ) from None
+        raise _refuse_without_entry("an entry cannot be parsed") from None
 
     if parts.username or parts.password:
-        target = parts.hostname or ""
-        if plugin_on:
-            refuse_a_credential_in_the_url(target, parts.geturl())
-        raise ConfigError(
-            f"{_PROTECTED_HOSTS}: the entry for {target!r} carries a credential, "
-            "which a protected host is never sent — remove it"
+        raise _refuse_without_entry(
+            f"the entry for {parts.hostname or ''!r} carries a credential"
         )
 
     if parts.scheme not in ("", "http", "https"):
