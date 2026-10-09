@@ -120,20 +120,26 @@ async def _start_server(
     protected_hosts: Mapping[str, ProtectedHost],
     socket_path: Path,
 ) -> grpc.aio.Server:
-    """Build, bind and start the server. Raises `ConfigError` if it can't bind."""
+    """Build, bind and start the server. Raises `ConfigError` if the socket
+    path can't be used."""
     server = grpc.aio.server()
     external_auth_pb2_grpc.add_AuthorizationServicer_to_server(
         _ExtAuthz(holder, protected_hosts), server
     )
     server.add_generic_rpc_handlers((_status_handler(holder, enabled),))
-    _remove_stale_socket(socket_path)
     try:
+        _remove_stale_socket(socket_path)
         server.add_insecure_port(f"unix:{socket_path}")
+        # Connecting needs write permission on the socket, so Envoy can connect
+        # if it runs as this user or in its group, and nothing else can.
+        socket_path.chmod(0o660)
     except RuntimeError as exc:
         raise ConfigError(f"RAIL_PROXY_EXT_SOCKET: cannot bind {socket_path}") from exc
-    # Connecting needs write permission on the socket, so Envoy can connect if
-    # it runs as this user or in its group, and nothing else can.
-    socket_path.chmod(0o660)
+    except OSError as exc:
+        # E.g. a directory it can't search, or a stale socket it can't remove.
+        raise ConfigError(
+            f"RAIL_PROXY_EXT_SOCKET: cannot use {socket_path}: {exc.strerror}"
+        ) from exc
     await server.start()
     log.info("serving Envoy's checks on %s", socket_path)
     return server

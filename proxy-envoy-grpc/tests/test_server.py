@@ -1,6 +1,7 @@
 """Tests for the gRPC server, over a real channel on a unix socket."""
 
 import asyncio
+import contextlib
 import json
 import os
 import signal
@@ -227,6 +228,69 @@ async def test_a_file_that_is_not_a_socket_is_left_alone(monkeypatch, socket_pat
         await server._start_server(None, False, _protected(monkeypatch), socket_path)
 
     assert socket_path.read_text() == "not ours"
+
+
+@pytest.mark.asyncio
+async def test_a_socket_in_a_missing_directory_is_a_configuration_error(
+    monkeypatch, socket_path
+):
+    missing = socket_path.parent / "missing" / "ext.sock"
+
+    with pytest.raises(ConfigError, match=f"cannot bind {missing}"):
+        await server._start_server(None, False, _protected(monkeypatch), missing)
+
+
+@contextlib.contextmanager
+def _mode(path: Path, mode: int):
+    """`path` with `mode` for the block, restored so the directory can be
+    cleaned up."""
+    before = path.stat().st_mode & 0o777
+    path.chmod(mode)
+    try:
+        yield
+    finally:
+        path.chmod(before)
+
+
+_AS_ROOT = pytest.mark.skipif(
+    os.geteuid() == 0, reason="root is not stopped by permissions"
+)
+
+
+@_AS_ROOT
+@pytest.mark.asyncio
+async def test_a_directory_it_cannot_search_is_a_configuration_error(
+    monkeypatch, socket_path
+):
+    locked = socket_path.parent / "locked"
+    locked.mkdir()
+    path = locked / "ext.sock"
+
+    with (
+        _mode(locked, 0o000),
+        pytest.raises(ConfigError, match=f"cannot use {path}: Permission denied"),
+    ):
+        await server._start_server(None, False, _protected(monkeypatch), path)
+
+
+@_AS_ROOT
+@pytest.mark.asyncio
+async def test_a_stale_socket_it_cannot_remove_is_a_configuration_error(
+    monkeypatch, socket_path
+):
+    stale = socket.socket(socket.AF_UNIX)
+    stale.bind(str(socket_path))
+    stale.close()
+
+    with (
+        _mode(socket_path.parent, 0o500),
+        pytest.raises(
+            ConfigError, match=f"cannot use {socket_path}: Permission denied"
+        ),
+    ):
+        await server._start_server(None, False, _protected(monkeypatch), socket_path)
+
+    assert socket_path.is_socket()
 
 
 @pytest.mark.parametrize(
