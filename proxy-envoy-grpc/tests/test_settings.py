@@ -68,6 +68,7 @@ def test_an_entry_that_is_more_or_less_than_a_host_is_refused(monkeypatch, entry
         _hosts(monkeypatch, entry)
 
     assert says in str(info.value)
+    assert str(info.value).endswith("an entry is [http(s)://]host[:port]")
 
 
 @pytest.mark.parametrize(
@@ -92,7 +93,8 @@ def test_an_unparseable_entry_is_not_shown(monkeypatch, entry):
 def test_a_credential_in_an_entry_is_refused_and_never_shown(
     monkeypatch, entry, plugin_on
 ):
-    """The error names the host, never the credential."""
+    """The error names the host, never the credential. The advice is the same
+    with the plugin on or off."""
     with pytest.raises(ConfigError) as info:
         _hosts(monkeypatch, entry, plugin_on=plugin_on)
 
@@ -100,8 +102,8 @@ def test_a_credential_in_an_entry_is_refused_and_never_shown(
     assert "credential" in message
     assert "mcp.example.com" in message
     assert "secret" not in message and "token@" not in message
-    if plugin_on:
-        assert "unset RAIL_PLUGIN_ENABLED" in message
+    assert message.endswith("an entry is [http(s)://]host[:port]")
+    assert "RAIL_PLUGIN_ENABLED" not in message
 
 
 @pytest.mark.parametrize(
