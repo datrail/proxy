@@ -1,4 +1,4 @@
-# The reference Envoy config for proxy-envoy-grpc, written for Envoy v1.39.
+# The e2e stack's Envoy config for proxy-envoy-grpc, written for Envoy v1.39.
 #
 # It holds no Rail configuration: which hosts are protected, and the ticket,
 # are the extension's alone. Envoy sends every request to the extension, which

@@ -35,7 +35,7 @@ x-envoy: &envoy
     timeout: 2s
     retries: 30
 
-# The test CA in place of the system bundle the reference config trusts.
+# The test CA in place of the system bundle envoy.yaml trusts.
 # nocopy: otherwise Docker fills the empty volume with the image's own
 # /etc/ssl/certs before the certs service has written to it.
 x-test-ca: &test-ca
@@ -204,7 +204,7 @@ services:
       certs: {condition: service_healthy}
       ext: {condition: service_healthy}
     volumes:
-      - ../../proxy-envoy-grpc/envoy.yaml:/etc/envoy/envoy.yaml:ro
+      - ./envoy.yaml:/etc/envoy/envoy.yaml:ro
       - ext-socket:/run/rail
       - *test-ca
 
@@ -214,7 +214,7 @@ services:
       certs: {condition: service_healthy}
       ext-unregistered: {condition: service_healthy}
     volumes:
-      - ../../proxy-envoy-grpc/envoy.yaml:/etc/envoy/envoy.yaml:ro
+      - ./envoy.yaml:/etc/envoy/envoy.yaml:ro
       - ext-unregistered-socket:/run/rail
       - *test-ca
 
@@ -224,7 +224,7 @@ services:
       certs: {condition: service_healthy}
       ext-expired: {condition: service_healthy}
     volumes:
-      - ../../proxy-envoy-grpc/envoy.yaml:/etc/envoy/envoy.yaml:ro
+      - ./envoy.yaml:/etc/envoy/envoy.yaml:ro
       - ext-expired-socket:/run/rail
       - *test-ca
 
@@ -234,7 +234,7 @@ services:
       certs: {condition: service_healthy}
       ext-issuer-down: {condition: service_healthy}
     volumes:
-      - ../../proxy-envoy-grpc/envoy.yaml:/etc/envoy/envoy.yaml:ro
+      - ./envoy.yaml:/etc/envoy/envoy.yaml:ro
       - ext-issuer-down-socket:/run/rail
       - *test-ca
 
@@ -244,7 +244,7 @@ services:
       certs: {condition: service_healthy}
       ext-passthrough: {condition: service_healthy}
     volumes:
-      - ../../proxy-envoy-grpc/envoy.yaml:/etc/envoy/envoy.yaml:ro
+      - ./envoy.yaml:/etc/envoy/envoy.yaml:ro
       - ext-passthrough-socket:/run/rail
       - *test-ca
 
@@ -257,7 +257,7 @@ services:
       certs: {condition: service_healthy}
       ext: {condition: service_healthy}
     volumes:
-      - ../../proxy-envoy-grpc/envoy.yaml:/etc/envoy/envoy.yaml:ro
+      - ./envoy.yaml:/etc/envoy/envoy.yaml:ro
       - ext-socket:/run/rail
       - *test-ca
     networks: [misresolved]
@@ -268,7 +268,7 @@ services:
     depends_on:
       certs: {condition: service_healthy}
     volumes:
-      - ../../proxy-envoy-grpc/envoy.yaml:/etc/envoy/envoy.yaml:ro
+      - ./envoy.yaml:/etc/envoy/envoy.yaml:ro
       - no-ext-socket:/run/rail
       - *test-ca
 

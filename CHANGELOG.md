@@ -30,9 +30,9 @@ and, from the first release that has it, `ghcr.io/datrail/proxy-envoy-grpc`.
 - `e2e/`: a stack in containers per interface, asserting what reaches an upstream
   in each ticket state: held, not found, expired, issuer unreachable and off.
 - `proxy-envoy-grpc`, the proxy as a service Envoy calls on each request
-  (ext_authz, over a unix socket), with a reference Envoy config. It attaches
-  the same `x-rail` headers to protected hosts and leaves the agent's other
-  headers as sent. Its image is `ghcr.io/datrail/proxy-envoy-grpc`, released
+  (ext_authz, over a unix socket), with an example Envoy config in `e2e/`. It
+  attaches the same `x-rail` headers to protected hosts and leaves the agent's
+  other headers as sent. Its image is `ghcr.io/datrail/proxy-envoy-grpc`, released
   from the same tags as `ghcr.io/datrail/proxy`.
 - Container images with an SBOM. A signed build-provenance attestation is
   attached where the repository is public — attestation requires that or
