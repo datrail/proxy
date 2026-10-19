@@ -18,7 +18,7 @@ makes this the quickstart as well as the test.
 e2e/
   shared/       what every stack uses: the stubs, the base services, the driver's helpers
   standalone/   the standalone proxy's stack
-  envoy-grpc/   the Envoy extension's stack, behind the reference Envoy config
+  envoy-grpc/   the Envoy extension's stack, and the Envoy config it runs
 ```
 
 ## What it proves that the unit suite cannot
@@ -94,11 +94,10 @@ The agent's requests go to Envoy on `http://envoy:15001`, with the target in
 `Host`. That is the request an intercepted agent would send, without the
 interception itself, which this stack doesn't test.
 
-Envoy runs the reference config,
-[`proxy-envoy-grpc/envoy.yaml`](../proxy-envoy-grpc/envoy.yaml), with the test
+Envoy runs [`envoy-grpc/envoy.yaml`](envoy-grpc/envoy.yaml), with the test
 CA in place of the system bundle, and calls `ext` on a shared unix socket.
 
-Each Envoy runs the same reference config. They differ in the extension they
+Each Envoy runs the same config. They differ in the extension they
 call, and `envoy-misresolved` in where it resolves `upstream.test`.
 
 | Service | Configuration | What it should see |

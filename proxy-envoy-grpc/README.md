@@ -9,7 +9,7 @@ the [main README](../README.md) for the whole.
 ```mermaid
 flowchart LR
   agent["Agent"] -->|"HTTP, the target in Host"| strip
-  subgraph envoy["Envoy, reference config"]
+  subgraph envoy["Envoy"]
     strip["header_mutation: removes x-rail and x-rail-*"] --> authz["ext_authz"]
     authz --> route{"route on x-rail-upstream"}
   end
@@ -70,7 +70,7 @@ Envoy forwards every request as if its host weren't protected:
 
 Envoy doesn't report this in its log: the access log line for a request
 forwarded this way carries no flag. Only Envoy's statistics count it
-(`ext_authz.failure_mode_allowed`), and the reference config exposes none, so
+(`ext_authz.failure_mode_allowed`), and the e2e stack's config exposes none, so
 watch the service's own health probe instead.
 
 ### At startup
@@ -85,11 +85,10 @@ arrives, protected requests get `x-rail-status: issuer-unreachable`.
   [`Dockerfile`](Dockerfile), from the repository root:
   `docker build -f proxy-envoy-grpc/Dockerfile .`. It runs as uid 10001 and
   serves on `/run/rail/ext.sock`.
-- **Envoy's config:** start from [`envoy.yaml`](envoy.yaml), the reference
-  config. It holds no Rail configuration: the protected hosts and the ticket
-  are this service's alone. It listens on 15001 and expects the socket at
-  `/run/rail/ext.sock`. The image holds a copy at `/app/envoy.yaml`:
-  `docker run --rm ghcr.io/datrail/proxy-envoy-grpc cat /app/envoy.yaml`.
+- **Envoy's config:** start from the e2e stack's,
+  [`e2e/envoy-grpc/envoy.yaml`](../e2e/envoy-grpc/envoy.yaml). It holds no Rail
+  configuration: the protected hosts and the ticket are this service's alone.
+  It listens on 15001 and expects the socket at `/run/rail/ext.sock`.
 - **Sharing the socket:** mount one volume at `/run/rail` in both containers.
   The socket is `0660`, so Envoy must run as uid 10001 or in group 10001 (the
   official Envoy image takes `ENVOY_GID=10001`).
