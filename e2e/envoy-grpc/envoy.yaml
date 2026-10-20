@@ -10,6 +10,8 @@
 static_resources:
   listeners:
     - name: agent
+      # 0.0.0.0 because the driver calls each Envoy across this stack's network. A
+      # deployment beside its agent binds 127.0.0.1: proxy-envoy-grpc/README.md says why.
       address:
         socket_address: { address: 0.0.0.0, port_value: 15001 }
       filter_chains:
