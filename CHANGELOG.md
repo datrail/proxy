@@ -54,6 +54,11 @@ and, from the first release that has it, `ghcr.io/datrail/proxy-envoy-grpc`.
   `fastmcp_proxy` and `fastmcp_proxy.xrail`. Anything that filters this proxy's
   output by logger name needs the new names.
 
+- **proxy-envoy-grpc's README tells a deployment to bind Envoy's listener to
+  loopback.** Envoy attaches the agent's ticket to whatever reaches it, and the
+  e2e config it points to binds `0.0.0.0`, which a sidecar copying it exposes to
+  every container on the agent's network.
+
 ### Removed
 
 - `RAIL_TICKET_MODE`, which `v0.1.0` shipped and its `.env.example` carried. An

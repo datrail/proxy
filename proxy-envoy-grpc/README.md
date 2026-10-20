@@ -89,6 +89,13 @@ arrives, protected requests get `x-rail-status: issuer-unreachable`.
   [`e2e/envoy-grpc/envoy.yaml`](../e2e/envoy-grpc/envoy.yaml). It holds no Rail
   configuration: the protected hosts and the ticket are this service's alone.
   It listens on 15001 and expects the socket at `/run/rail/ext.sock`.
+- **Bind the listener to loopback.** Envoy attaches the agent's ticket to
+  whatever reaches its listener, so only that agent may reach it. Run it in
+  the agent's network namespace, with the agent's traffic redirected to it,
+  and set the listener's address to `127.0.0.1`. The e2e config binds
+  `0.0.0.0` only because its driver calls each Envoy across the stack's
+  network; copied as it is, any container on the agent's network can call
+  Envoy and leave with the agent's identity.
 - **Sharing the socket:** mount one volume at `/run/rail` in both containers.
   The socket is `0660`, so Envoy must run as uid 10001 or in group 10001 (the
   official Envoy image takes `ENVOY_GID=10001`).
