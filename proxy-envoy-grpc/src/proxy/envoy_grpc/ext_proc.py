@@ -8,8 +8,8 @@ configured with, which the first message names:
 
 - `BUFFERED`, `BUFFERED_PARTIAL`, and `STREAMED` without
   `send_body_without_waiting_for_header_response`: the headers are answered at
-  once, and the body's parts held until the verdict. A deny then comes after
-  the headers were answered.
+  once, and the body's parts held until the verdict. Envoy sends nothing
+  upstream, headers included, until the body's parts are answered.
 - `STREAMED` with it, and `FULL_DUPLEX_STREAMED`: the headers' answer is held
   too, so nothing goes upstream before the verdict.
 - `NONE`: no body will come, so it is judged as not sent.
@@ -68,7 +68,7 @@ class ExtProc(external_processor_pb2_grpc.ExternalProcessorServicer):
                 part = message.WhichOneof("request")
                 if part not in _RESPONSE_TYPES:
                     continue
-                for response in stream.answer(message, part):
+                for response in await stream.answer(message, part):
                     yield response
                 if stream.ended:
                     return
@@ -94,7 +94,7 @@ class _Stream:
         self._held: list[tuple[object, str]] = []
         self.ended = False
 
-    def answer(
+    async def answer(
         self, message, part: str
     ) -> list[external_processor_pb2.ProcessingResponse]:
         """The responses `message` releases: none while it's held, several
@@ -104,9 +104,9 @@ class _Stream:
         waiting = self._quota is not None
         try:
             if part == "request_headers":
-                return self._answer_headers(message.request_headers)
+                return await self._answer_headers(message.request_headers)
             if waiting and part in ("request_body", "request_trailers"):
-                return self._read(message, part)
+                return await self._read(message, part)
             return [_continue(message, part, self._echoed)]
         except Exception as exc:  # noqa: BLE001 - before the verdict, or after
             if waiting:
@@ -132,7 +132,7 @@ class _Stream:
         )
         self._echoed = _get_echoed_parts(protocol_config)
 
-    def _answer_headers(
+    async def _answer_headers(
         self, http_headers
     ) -> list[external_processor_pb2.ProcessingResponse]:
         headers = _get_headers(http_headers)
@@ -141,9 +141,11 @@ class _Stream:
         request, verdict = self._pipeline.judge_headers(lambda: _build_request(headers))
         if isinstance(verdict, NeedsBody):
             if http_headers.end_of_stream:
-                verdict = self._pipeline.judge_body(request, lambda: b"")
+                verdict = await self._pipeline.judge_body(request, lambda: b"")
             elif self._mode not in _READABLE:
-                verdict = self._pipeline.judge_body(request, lambda: Reason.NOT_SENT)
+                verdict = await self._pipeline.judge_body(
+                    request, lambda: Reason.NOT_SENT
+                )
             else:
                 self._request = request
                 self._quota = self._pipeline.open_quota()
@@ -153,7 +155,7 @@ class _Stream:
                 return [self._answer_verdict(Allow())]
         return [self._answer_verdict(verdict)]
 
-    def _read(
+    async def _read(
         self, message, part: str
     ) -> list[external_processor_pb2.ProcessingResponse]:
         self._held.append((message, part))
@@ -167,7 +169,7 @@ class _Stream:
                 reason = Reason.TRUNCATED
             if reason is not None:
                 return self._release(
-                    self._pipeline.judge_body(self._request, lambda: reason)
+                    await self._pipeline.judge_body(self._request, lambda: reason)
                 )
             if not body.end_of_stream:
                 return []
@@ -175,7 +177,9 @@ class _Stream:
         data = b"".join(
             m.request_body.body for m, p in self._held if p == "request_body"
         )
-        return self._release(self._pipeline.judge_body(self._request, lambda: data))
+        return self._release(
+            await self._pipeline.judge_body(self._request, lambda: data)
+        )
 
     def _release(
         self, verdict: Allow | Deny

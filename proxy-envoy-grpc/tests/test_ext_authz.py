@@ -1,6 +1,9 @@
 """The ext_authz adapter: the request it builds, the judge, and the answer."""
 
+import asyncio
+import gzip
 import tempfile
+import time
 from pathlib import Path
 
 import grpc
@@ -10,7 +13,7 @@ from envoy.service.auth.v3 import external_auth_pb2, external_auth_pb2_grpc
 from google.rpc import code_pb2
 
 from core_support import wound_holder
-from proxy.core.body import BodyLimits
+from proxy.core.body import BodyLimits, BodyPolicy, Reason
 from proxy.core.judge import Allow, AllowAll, Deny, NeedsBody
 from proxy.envoy_grpc import ext_authz, outcome, server
 from proxy.envoy_grpc import settings as envoy_settings
@@ -36,7 +39,7 @@ def _check_request(headers: dict[str, str]) -> external_auth_pb2.CheckRequest:
     return request
 
 
-def _servicer(monkeypatch, judge, on_judge_failure=None, limits=None):
+def _servicer(monkeypatch, judge, on_judge_failure=None, limits=None, **judging):
     return ext_authz.ExtAuthz(
         outcome.Pipeline(
             wound_holder(ticket="the-ticket"),
@@ -45,6 +48,7 @@ def _servicer(monkeypatch, judge, on_judge_failure=None, limits=None):
                 judge=judge,
                 on_failure=on_judge_failure or Deny(),
                 body_limits=limits or BodyLimits(),
+                **judging,
             ),
         )
     )
@@ -173,8 +177,8 @@ class _BodyJudge:
     def judge_body(self, request, body):
         if self.raises:
             raise ValueError(_SECRET)
-        self.bodies.append(body)
-        return Deny() if b"deny" in body else Allow()
+        self.bodies.append(body.data)
+        return Deny() if b"deny" in body.data else Allow()
 
 
 def _break_building(monkeypatch):
@@ -228,11 +232,16 @@ async def test_a_judge_failure_is_forwarded_when_the_setting_allows(
 
 
 def _with_body(
-    *, raw: bytes = b"", text: str = "", partial: str | None, length: int | None
+    *,
+    raw: bytes = b"",
+    text: str = "",
+    partial: str | None,
+    length: int | None,
+    headers: dict[str, str] | None = None,
 ) -> external_auth_pb2.CheckRequest:
     """A request as Envoy sends it with `with_request_body`: the body in
     `raw_body` under `pack_as_bytes`, in `body` without it."""
-    headers = {}
+    headers = dict(headers or {})
     if partial is not None:
         headers["x-envoy-auth-partial-body"] = partial
     if length is not None:
@@ -358,3 +367,94 @@ async def test_a_body_past_grpc_s_default_message_size_is_received(
 
     assert judge.bodies == [body]
     _assert_forwarded_with_the_ticket(response)
+
+
+def _gzipped_request(data: bytes) -> external_auth_pb2.CheckRequest:
+    body = gzip.compress(data)
+    return _with_body(
+        raw=body,
+        partial="false",
+        length=len(body),
+        headers={"content-encoding": "gzip", "content-type": "application/json"},
+    )
+
+
+@pytest.mark.asyncio
+async def test_the_judge_sees_the_body_decoded_and_parsed(monkeypatch):
+    seen = []
+
+    class Recording(_BodyJudge):
+        def judge_body(self, request, body):
+            seen.append(body)
+            return Allow()
+
+    await _servicer(monkeypatch, Recording()).Check(
+        _gzipped_request(b'{"method": "tools/call"}'), None
+    )
+
+    [view] = seen
+    assert view.json == {"method": "tools/call"}
+
+
+@pytest.mark.asyncio
+async def test_a_zip_bomb_is_refused_at_the_cap(monkeypatch, caplog):
+    judge = _BodyJudge()
+    servicer = _servicer(
+        monkeypatch, judge, limits=BodyLimits(max_bytes=65536, budget_bytes=65536)
+    )
+    request = _gzipped_request(b"\x00" * 10_000_000)
+    assert len(request.attributes.request.http.raw_body) < 65536
+
+    response = await servicer.Check(request, None)
+
+    assert judge.bodies == []
+    _assert_denied(response)
+    assert "(decoded-too-large); refusing it" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_a_reason_the_policy_allows_is_forwarded_unjudged(monkeypatch, caplog):
+    judge = _BodyJudge()
+    servicer = _servicer(monkeypatch, judge, body_policy=BodyPolicy([Reason.TRUNCATED]))
+
+    response = await servicer.Check(
+        _with_body(raw=b"start", partial="true", length=100), None
+    )
+
+    assert judge.bodies == []
+    _assert_forwarded_with_the_ticket(response)
+    assert "(truncated); forwarding it unjudged" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_a_slow_judgement_is_cut_short_without_stalling_other_calls(
+    monkeypatch, caplog
+):
+    """Judged in a worker thread, so the event loop answers other calls
+    meanwhile, and refused as `timed-out` once the time budget runs out."""
+    finished: list[str] = []
+
+    class Slow(_BodyJudge):
+        def judge_body(self, request, body):
+            time.sleep(0.5)
+            return Allow()
+
+    slow = _servicer(monkeypatch, Slow(), body_timeout=0.1)
+    quick = _servicer(monkeypatch, AllowAll())
+
+    async def call(name, servicer, request):
+        response = await servicer.Check(request, None)
+        finished.append(name)
+        return response
+
+    started = time.monotonic()
+    slow_response, _ = await asyncio.gather(
+        call("slow", slow, _with_body(raw=b"x", partial="false", length=1)),
+        call("quick", quick, _check_request({})),
+    )
+    elapsed = time.monotonic() - started
+
+    assert finished == ["quick", "slow"]
+    assert elapsed < 0.4
+    _assert_denied(slow_response)
+    assert "(timed-out); refusing it" in caplog.text

@@ -1,5 +1,8 @@
 """A body read under bounds: the settings, the per-message cap, the
-process-wide budget, and the policy for a body that can't be judged."""
+process-wide budget, the policy for a body that can't be judged, and the view
+rules see."""
+
+import gzip
 
 import pytest
 
@@ -7,10 +10,14 @@ from proxy.core.body import (
     BodyBudget,
     BodyLimits,
     BodyPolicy,
+    BodyView,
     Reason,
+    build_view,
     get_body_limits,
+    get_body_policy,
+    get_body_timeout,
 )
-from proxy.core.judge import Deny
+from proxy.core.judge import Allow, Deny
 from proxy.core.settings import ConfigError
 
 _MIB = 1024 * 1024
@@ -86,3 +93,151 @@ def test_a_closed_quota_gives_its_bytes_back():
 @pytest.mark.parametrize("reason", list(Reason))
 def test_the_policy_denies_every_reason(reason):
     assert BodyPolicy().get_verdict(reason) == Deny()
+
+
+def test_the_policy_lets_through_the_reasons_it_is_given():
+    policy = BodyPolicy([Reason.TRUNCATED])
+
+    assert policy.get_verdict(Reason.TRUNCATED) == Allow()
+    assert policy.get_verdict(Reason.TOO_LARGE) == Deny()
+
+
+def test_the_policy_denies_every_reason_by_default():
+    policy = get_body_policy()
+
+    assert all(policy.get_verdict(reason) == Deny() for reason in Reason)
+
+
+def test_the_reasons_to_let_through_are_a_setting(monkeypatch):
+    monkeypatch.setenv(
+        "RAIL_PROXY_ALLOW_UNREADABLE_BODY", " Truncated, unsupported-encoding ,"
+    )
+
+    policy = get_body_policy()
+
+    allowed = {reason for reason in Reason if policy.get_verdict(reason) == Allow()}
+    assert allowed == {Reason.TRUNCATED, Reason.UNSUPPORTED_ENCODING}
+
+
+def test_a_reason_that_does_not_exist_is_refused(monkeypatch):
+    monkeypatch.setenv("RAIL_PROXY_ALLOW_UNREADABLE_BODY", "truncated,too-big")
+
+    with pytest.raises(ConfigError, match="too-big is not a reason"):
+        get_body_policy()
+
+
+def test_the_body_timeout_defaults_under_envoy_s_callout_timeouts():
+    assert get_body_timeout() == 0.15
+
+
+def test_the_body_timeout_is_a_setting(monkeypatch):
+    monkeypatch.setenv("RAIL_PROXY_BODY_TIMEOUT_SECONDS", "0.5")
+
+    assert get_body_timeout() == 0.5
+
+
+_JSON = [("content-type", "application/json; charset=utf-8")]
+
+
+def _gzip(data: bytes) -> bytes:
+    return gzip.compress(data)
+
+
+def test_a_plain_body_is_seen_as_it_came():
+    view = build_view(b"\x00\x01binary", [("content-type", "image/png")], 100)
+
+    assert view == BodyView(b"\x00\x01binary", "image/png")
+    assert not view.is_json
+
+
+@pytest.mark.parametrize(
+    "media_type", ["application/json", "application/vnd.api+json", "APPLICATION/JSON"]
+)
+def test_a_json_body_is_parsed(media_type):
+    view = build_view(b'{"method": "tools/call"}', [("content-type", media_type)], 100)
+
+    assert view.is_json
+    assert view.json == {"method": "tools/call"}
+
+
+def test_an_empty_json_body_is_not_parsed():
+    view = build_view(b"", _JSON, 100)
+
+    assert view == BodyView(b"", "application/json")
+
+
+@pytest.mark.parametrize(
+    "data",
+    [b'{"method": ', b"\xff\xfe\x00", b"[" * 100_000],
+    ids=["cut", "bytes", "deep"],
+)
+def test_json_that_does_not_parse_is_malformed(data):
+    assert build_view(data, _JSON, 1_000_000) == Reason.MALFORMED
+
+
+@pytest.mark.parametrize("coding", ["gzip", "x-gzip", "GZIP"])
+def test_a_gzip_body_is_decoded_before_it_is_parsed(coding):
+    headers = [*_JSON, ("content-encoding", coding)]
+
+    view = build_view(_gzip(b'{"a": 1}'), headers, 100)
+
+    assert view.json == {"a": 1}
+
+
+def test_stacked_codings_are_undone_last_first():
+    data = _gzip(_gzip(b'{"a": 1}'))
+
+    across_one = build_view(
+        data, [*_JSON, ("content-encoding", "gzip, identity, gzip")], 100
+    )
+    across_two = build_view(
+        data, [*_JSON, ("content-encoding", "gzip"), ("content-encoding", "gzip")], 100
+    )
+
+    assert across_one.json == across_two.json == {"a": 1}
+
+
+def test_several_gzip_members_are_decoded_whole():
+    view = build_view(
+        _gzip(b"first,") + _gzip(b"second"), [("content-encoding", "gzip")], 100
+    )
+
+    assert view.data == b"first,second"
+
+
+def test_a_zip_bomb_stops_at_the_cap():
+    bomb = _gzip(b"\x00" * (64 * 1024 * 1024))
+    assert len(bomb) < 100_000
+
+    assert (
+        build_view(bomb, [("content-encoding", "gzip")], 1024)
+        == Reason.DECODED_TOO_LARGE
+    )
+
+
+def test_a_body_decoded_to_exactly_the_cap_is_kept():
+    view = build_view(_gzip(b"x" * 1024), [("content-encoding", "gzip")], 1024)
+
+    assert view.data == b"x" * 1024
+
+
+def test_a_stacked_bomb_stops_at_the_cap():
+    bomb = _gzip(_gzip(b"\x00" * (64 * 1024 * 1024)))
+
+    view = build_view(bomb, [("content-encoding", "gzip, gzip")], 1024 * 1024)
+
+    assert view == Reason.DECODED_TOO_LARGE
+
+
+@pytest.mark.parametrize(
+    "data", [_gzip(b"whole")[:-10], b"not gzip at all"], ids=["cut", "not-gzip"]
+)
+def test_gzip_that_does_not_decode_is_malformed(data):
+    assert build_view(data, [("content-encoding", "gzip")], 100) == Reason.MALFORMED
+
+
+@pytest.mark.parametrize("coding", ["br", "zstd", "deflate", "compress"])
+def test_a_coding_with_no_decoder_is_unsupported(coding):
+    headers = [("content-encoding", f"gzip, {coding}")]
+
+    assert build_view(b"anything", headers, 100) == Reason.UNSUPPORTED_ENCODING

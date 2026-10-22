@@ -300,8 +300,17 @@ async def test_a_stale_socket_it_cannot_remove_is_a_configuration_error(
         {"RAIL_PLUGIN_ENABLED": "true"},
         {"RAIL_PLUGIN_ENABLED": "maybe"},
         {"RAIL_PROXY_ON_JUDGE_FAILURE": "refuse"},
+        {"RAIL_PROXY_MAX_BODY_BYTES": "8MiB"},
+        {"RAIL_PROXY_ALLOW_UNREADABLE_BODY": "too-big"},
     ],
-    ids=["bad-entry", "plugin-on-without-rail-center", "bad-flag", "bad-judge-failure"],
+    ids=[
+        "bad-entry",
+        "plugin-on-without-rail-center",
+        "bad-flag",
+        "bad-judge-failure",
+        "bad-body-cap",
+        "bad-body-reason",
+    ],
 )
 def test_a_configuration_error_exits_2(monkeypatch, env):
     for name, value in env.items():

@@ -44,7 +44,7 @@ class ExtAuthz(external_auth_pb2_grpc.AuthorizationServicer):
         built, verdict = self._pipeline.judge_headers(lambda: _build_request(http))
         if isinstance(verdict, NeedsBody):
             with self._pipeline.open_quota() as quota:
-                verdict = self._pipeline.judge_body(
+                verdict = await self._pipeline.judge_body(
                     built, lambda: self._read_body(http, quota)
                 )
         return _answer(self._pipeline.get_outcome(verdict, http.host, names))

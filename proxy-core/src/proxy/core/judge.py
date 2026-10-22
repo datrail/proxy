@@ -10,10 +10,14 @@ What happens when judging fails, before any verdict, is a setting:
 
 import os
 from dataclasses import dataclass
-from typing import Protocol
+from typing import TYPE_CHECKING, Protocol
 
 from proxy.core.request import Request
 from proxy.core.settings import ConfigError
+
+if TYPE_CHECKING:
+    # body.py imports the verdicts from here.
+    from proxy.core.body import BodyView
 
 # What a refused agent is answered, whichever interface refuses it.
 DENIED_STATUS = 403
@@ -44,9 +48,10 @@ class Judge(Protocol):
         which the caller answers as `get_judge_failure_verdict` says."""
         ...
 
-    def judge_body(self, request: Request, body: bytes) -> Allow | Deny:
+    def judge_body(self, request: Request, body: "BodyView") -> Allow | Deny:
         """The verdict once the body is read, after `judge_headers` needed
-        it. `body` is empty for a request without one."""
+        it. Its data is empty for a request without a body. Runs off the
+        event loop."""
         ...
 
 
@@ -56,7 +61,7 @@ class AllowAll:
     def judge_headers(self, request: Request) -> Allow:
         return Allow()
 
-    def judge_body(self, request: Request, body: bytes) -> Allow:
+    def judge_body(self, request: Request, body: "BodyView") -> Allow:
         return Allow()
 
 

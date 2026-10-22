@@ -17,7 +17,7 @@ import grpc
 from envoy.service.auth.v3 import external_auth_pb2_grpc
 from envoy.service.ext_proc.v3 import external_processor_pb2_grpc
 
-from proxy.core.body import get_body_limits
+from proxy.core.body import get_body_limits, get_body_policy, get_body_timeout
 from proxy.core.judge import get_judge_failure_verdict
 from proxy.core.lifecycle import build_holder, health_payload, running
 from proxy.core.logs import configure_logging
@@ -157,7 +157,10 @@ def main() -> int:
         holder = build_holder()
         socket_path = get_socket_path()
         judging = Judging(
-            on_failure=get_judge_failure_verdict(), body_limits=get_body_limits()
+            on_failure=get_judge_failure_verdict(),
+            body_limits=get_body_limits(),
+            body_policy=get_body_policy(),
+            body_timeout=get_body_timeout(),
         )
     except ConfigError as exc:
         log.error("%s", exc)

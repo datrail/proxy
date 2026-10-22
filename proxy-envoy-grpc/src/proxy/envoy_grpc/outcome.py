@@ -5,12 +5,20 @@ and, when the judge needs it, its body, then decide on it; and turns the
 `Outcome` into its protocol's answer.
 """
 
+import asyncio
 import logging
 import traceback
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
 
-from proxy.core.body import BodyBudget, BodyLimits, BodyPolicy, BodyQuota, Reason
+from proxy.core.body import (
+    BodyBudget,
+    BodyLimits,
+    BodyPolicy,
+    BodyQuota,
+    Reason,
+    build_view,
+)
 from proxy.core.judge import Allow, AllowAll, Deny, Judge, NeedsBody
 from proxy.core.request import Request
 from proxy.core.xrail_auth import TicketHeaders, TicketHolder, outbound_headers
@@ -32,11 +40,14 @@ class Outcome:
 @dataclass(frozen=True)
 class Judging:
     """How requests are judged: the judge, the verdict when judging fails,
-    and the bounds on the bodies read."""
+    the bounds on the bodies read, the verdict for a body that can't be
+    judged, and how long judging a body may take."""
 
     judge: Judge = field(default_factory=AllowAll)
     on_failure: Allow | Deny = field(default_factory=Deny)
     body_limits: BodyLimits = field(default_factory=BodyLimits)
+    body_policy: BodyPolicy = field(default_factory=BodyPolicy)
+    body_timeout: float = 0.15
 
 
 class Pipeline:
@@ -61,8 +72,10 @@ class Pipeline:
         self._ticket_headers = TicketHeaders(holder)
         self._judge = judging.judge
         self._on_judge_failure = judging.on_failure
+        self._max_body_bytes = judging.body_limits.max_bytes
         self._budget = BodyBudget(judging.body_limits)
-        self._policy = BodyPolicy()
+        self._policy = judging.body_policy
+        self._body_timeout = judging.body_timeout
 
     def judge_headers(
         self, build_request: Callable[[], Request]
@@ -80,24 +93,41 @@ class Pipeline:
         """A quota for one request's body, under the process-wide budget."""
         return self._budget.open_quota()
 
-    def judge_body(
+    async def judge_body(
         self, request: Request, read: Callable[[], bytes | Reason]
     ) -> Allow | Deny:
         """The verdict once `read` has the body, or the policy's for the
-        reason it can't."""
+        reason it can't be judged. The view is built and judged in a worker
+        thread, so a large body doesn't stall other calls, within the time
+        budget, so Envoy is answered before it gives up."""
         try:
             body = read()
             if isinstance(body, Reason):
-                verdict = self._policy.get_verdict(body)
-                log.warning(
-                    "cannot judge a request's body (%s); %s",
-                    body,
-                    _describe(verdict),
-                )
-                return verdict
-            return self._judge.judge_body(request, body)
+                return self._get_policy_verdict(body)
+            try:
+                async with asyncio.timeout(self._body_timeout):
+                    verdict = await asyncio.to_thread(self._judge_view, request, body)
+            except TimeoutError:
+                # The thread runs on to its end; only its answer is dropped.
+                verdict = Reason.TIMED_OUT
+            if isinstance(verdict, Reason):
+                return self._get_policy_verdict(verdict)
+            return verdict
         except Exception as exc:  # noqa: BLE001 - answered as the setting says
             return self.get_failure_verdict(exc)
+
+    def _judge_view(self, request: Request, body: bytes) -> Allow | Deny | Reason:
+        view = build_view(body, request.headers, self._max_body_bytes)
+        if isinstance(view, Reason):
+            return view
+        return self._judge.judge_body(request, view)
+
+    def _get_policy_verdict(self, reason: Reason) -> Allow | Deny:
+        verdict = self._policy.get_verdict(reason)
+        log.warning(
+            "cannot judge a request's body (%s); %s", reason, _describe(verdict)
+        )
+        return verdict
 
     def get_failure_verdict(self, exc: Exception) -> Allow | Deny:
         """Log a failure while judging, and give the verdict for it."""

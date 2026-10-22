@@ -423,8 +423,8 @@ class _BodyJudge:
     def judge_body(self, request, body):
         if self.raises:
             raise ValueError(_SECRET)
-        self.bodies.append(body)
-        return Deny() if b"deny" in body else Allow()
+        self.bodies.append(body.data)
+        return Deny() if b"deny" in body.data else Allow()
 
 
 class _Live:
@@ -688,11 +688,11 @@ async def test_a_failure_while_reading_the_body_follows_the_setting(
     real = ext_proc._Stream._read
     calls = []
 
-    def flaky(self, message, part):
+    async def flaky(self, message, part):
         calls.append(part)
         if len(calls) == 2:
             raise ValueError(_SECRET)
-        return real(self, message, part)
+        return await real(self, message, part)
 
     monkeypatch.setattr(ext_proc._Stream, "_read", flaky)
     messages = [
