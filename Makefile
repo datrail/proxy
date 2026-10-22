@@ -20,8 +20,8 @@ test:
 	uv run pytest -q
 
 # Every e2e stack in turn; each is an image, a stubbed control plane and a
-# stubbed upstream, and asserts what reached the wire. Leaves the containers up;
-# `make e2e-down` removes them.
+# stubbed upstream, and asserts what reached the wire. Leaves the stopped
+# containers and volumes; `make e2e-down` removes them.
 e2e: e2e-standalone e2e-envoy-grpc
 
 e2e-standalone:
