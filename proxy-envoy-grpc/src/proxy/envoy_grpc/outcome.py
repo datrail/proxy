@@ -85,9 +85,11 @@ class Pipeline:
         `NeedsBody`."""
         try:
             request = build_request()
-            return request, self._judge.judge_headers(request)
+            verdict = self._judge.judge_headers(request)
         except Exception as exc:  # noqa: BLE001 - answered as the setting says
             return None, self.get_failure_verdict(exc)
+        _log_if_denied(request, verdict, "headers")
+        return request, verdict
 
     def open_quota(self) -> BodyQuota:
         """A quota for one request's body, under the process-wide budget."""
@@ -112,9 +114,10 @@ class Pipeline:
                 verdict = Reason.TIMED_OUT
             if isinstance(verdict, Reason):
                 return self._get_policy_verdict(verdict)
-            return verdict
         except Exception as exc:  # noqa: BLE001 - answered as the setting says
             return self.get_failure_verdict(exc)
+        _log_if_denied(request, verdict, "body")
+        return verdict
 
     def _judge_view(self, request: Request, body: bytes) -> Allow | Deny | Reason:
         view = build_view(body, request.headers, self._max_body_bytes)
@@ -154,6 +157,14 @@ class Pipeline:
         if decision.headers:
             self._ticket_headers.report(target, xrail_headers)
         return decision
+
+
+def _log_if_denied(request: Request, verdict: object, judged_on: str) -> None:
+    # The host only: what a rule matched may quote a header or the body.
+    if isinstance(verdict, Deny):
+        log.info(
+            "refusing a request to %s, judged on its %s", request.authority, judged_on
+        )
 
 
 def _describe(verdict: Allow | Deny) -> str:

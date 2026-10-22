@@ -545,27 +545,100 @@ async def test_the_headers_are_held_with_the_body(
     ("mode", "without_waiting"),
     [
         (_Mode.BUFFERED, False),
+        (_Mode.BUFFERED_PARTIAL, False),
         (_Mode.STREAMED, False),
         (_Mode.STREAMED, True),
         (_Mode.FULL_DUPLEX_STREAMED, False),
     ],
-    ids=["buffered", "streamed", "streamed-without-waiting", "full-duplex"],
+    ids=[
+        "buffered",
+        "buffered-partial",
+        "streamed",
+        "streamed-without-waiting",
+        "full-duplex",
+    ],
 )
 async def test_a_body_the_judge_denies_is_refused(
-    monkeypatch, socket_path, mode, without_waiting
+    monkeypatch, socket_path, caplog, mode, without_waiting
 ):
+    """§8 #3: refused from the body stage in every mode. Where the headers
+    were answered first, that is all that went before."""
     messages = [
         _body_headers(mode, without_waiting=without_waiting),
         _body(b"please deny", True),
     ]
     srv = await _start(monkeypatch, socket_path, judging=_judging(_BodyJudge()))
     try:
-        responses = await _process(socket_path, messages)
+        with caplog.at_level("INFO"):
+            responses = await _process(socket_path, messages)
     finally:
         await srv.stop(None)
 
-    assert responses[-1].immediate_response.status.code == 403
-    assert all(not r.HasField("immediate_response") for r in responses[:-1])
+    *before, refused = responses
+    _assert_immediately_denied(refused)
+    headers_held = without_waiting or mode == _Mode.FULL_DUPLEX_STREAMED
+    assert [_part(r) for r in before] == ([] if headers_held else ["request_headers"])
+    assert "refusing a request to mcp.example.com, judged on its body" in caplog.text
+
+
+def _assert_immediately_denied(response):
+    immediate = response.immediate_response
+    assert immediate.status.code == 403
+    assert immediate.body == b"request refused by policy\n"
+    assert {
+        h.header.key: h.header.raw_value for h in immediate.headers.set_headers
+    } == {"content-type": b"text/plain"}
+
+
+class _HeadersDeny:
+    def judge_headers(self, request):
+        return Deny()
+
+    def judge_body(self, request, body):
+        raise AssertionError("a request refused on its headers has no body read")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("mode", "without_waiting"),
+    [
+        (_Mode.NONE, False),
+        (_Mode.BUFFERED, False),
+        (_Mode.BUFFERED_PARTIAL, False),
+        (_Mode.STREAMED, False),
+        (_Mode.STREAMED, True),
+        (_Mode.FULL_DUPLEX_STREAMED, False),
+    ],
+    ids=[
+        "none",
+        "buffered",
+        "buffered-partial",
+        "streamed",
+        "streamed-without-waiting",
+        "full-duplex",
+    ],
+)
+async def test_a_request_the_judge_denies_on_its_headers_is_refused_at_once(
+    monkeypatch, socket_path, caplog, mode, without_waiting
+):
+    """Before any body is asked for or held, and the stream ends there."""
+    messages = [
+        _body_headers(mode, without_waiting=without_waiting),
+        _body(b"never read", True),
+    ]
+    srv = await _start(monkeypatch, socket_path, judging=_judging(_HeadersDeny()))
+    try:
+        with caplog.at_level("INFO"):
+            responses = await _process(socket_path, messages)
+    finally:
+        await srv.stop(None)
+
+    [refused] = responses
+    _assert_immediately_denied(refused)
+    assert "refusing a request to mcp.example.com, judged on its headers" in (
+        caplog.text
+    )
+    assert "agent-secret" not in caplog.text
 
 
 @pytest.mark.asyncio

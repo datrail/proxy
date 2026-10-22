@@ -146,15 +146,24 @@ async def test_the_judge_sees_headers_sent_as_a_header_map(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_a_denied_request_gets_403_and_no_changes(monkeypatch):
+async def test_a_denied_request_gets_403_and_no_changes(monkeypatch, caplog):
+    """Logged with the host only, never what the judge matched."""
+
     def never(*_args):
         raise AssertionError("a denied request is not decided on")
 
     monkeypatch.setattr(outcome, "decide", never)
 
-    response = await _check(monkeypatch, _Answering(Deny()), Allow())
+    with caplog.at_level("INFO"):
+        response = await _check(
+            monkeypatch, _Answering(Deny()), Allow(), {"authorization": _SECRET}
+        )
 
     _assert_denied(response)
+    assert "refusing a request to mcp.example.com, judged on its headers" in (
+        caplog.text
+    )
+    assert "agent-secret" not in caplog.text
 
 
 @pytest.mark.asyncio
@@ -256,17 +265,21 @@ def _with_body(
 @pytest.mark.parametrize(
     ("body", "allowed"), [(b'{"ok":1}', True), (b'{"deny":1}', False)]
 )
-async def test_the_judge_reads_a_body_sent_as_bytes(monkeypatch, body, allowed):
+async def test_the_judge_reads_a_body_sent_as_bytes(monkeypatch, caplog, body, allowed):
     judge = _BodyJudge()
     request = _with_body(raw=body, partial="false", length=len(body))
 
-    response = await _servicer(monkeypatch, judge).Check(request, None)
+    with caplog.at_level("INFO"):
+        response = await _servicer(monkeypatch, judge).Check(request, None)
 
     assert judge.bodies == [body]
     if allowed:
         _assert_forwarded_with_the_ticket(response)
+        assert "refusing" not in caplog.text
     else:
         _assert_denied(response)
+        assert "judged on its body" in caplog.text
+        assert body.decode() not in caplog.text
 
 
 @pytest.mark.asyncio
