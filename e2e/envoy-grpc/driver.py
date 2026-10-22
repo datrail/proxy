@@ -1,7 +1,11 @@
 """Drives requests through each Envoy and asserts what reached each server."""
 
+import http.client
 import json
+import socket
 import ssl
+import threading
+import time
 import urllib.error
 import urllib.request
 
@@ -43,14 +47,14 @@ def run(via, target, base):
     drive(envoy(via), {"Host": target, **AGENT_HEADERS}, tool="track_package")
 
 
-def send(via, target, path="/mcp", method="POST"):
+def send(via, target, path="/mcp", method="POST", headers=None):
     """One request through Envoy `via`, not following redirects. Returns the
     status and body, whatever the status."""
     request = urllib.request.Request(
         f"http://{via}:15001{path}",
         data=b"{}" if method == "POST" else None,
         method=method,
-        headers={"Host": target, "Content-Type": "application/json"},
+        headers={"Host": target, "Content-Type": "application/json", **(headers or {})},
     )
     opener = urllib.request.build_opener(_NoRedirect)
     try:
@@ -203,5 +207,163 @@ reset_journal(OPEN)
 status, _ = send("envoy", "upstream.test:8443", path="/redirect", method="GET")
 check("the agent gets the 302", status == 302)
 expect("Envoy did not follow it", "none", count({"urlPath": "/followed"}, OPEN))
+
+print("over ext_proc — protected host, registered: the ticket, over HTTPS")
+run("envoy-ext-proc", "upstream.test:8443", UPSTREAM)
+ticketed(UPSTREAM)
+expect(
+    "no status header alongside it", "none", count(present("x-rail-status"), UPSTREAM)
+)
+expect("the sandbox's own x-rail never crosses", "none", count(FORGED, UPSTREAM))
+the_agents_own_headers_cross(UPSTREAM)
+
+for target, base, scheme in [
+    ("upstream.test", UPSTREAM, "https"),
+    ("upstream-agent-port.test:9443", AGENT_PORT, "https"),
+    ("upstream-443.test", UPSTREAM_443, "https"),
+    ("upstream-plain.test:8080", PLAIN, "http"),
+]:
+    print(f"over ext_proc — {target}: routed as over ext_authz")
+    run("envoy-ext-proc", target, base)
+    ticketed(base, scheme=scheme)
+
+print("over ext_proc — unprotected host, forwarded as sent")
+run("envoy-ext-proc", "open.test:8080", OPEN)
+expect("the call is forwarded over HTTP", "some", count(posts(scheme="http"), OPEN))
+expect("no x-rail crosses", "none", count(ANY_XRAIL, OPEN))
+the_agents_own_headers_cross(OPEN)
+
+for via, callout in [("envoy-judged", "ext_authz"), ("envoy-ext-proc", "ext_proc")]:
+    print(f"over {callout} — refused on its headers: a 403, and nothing goes out")
+    reset_journal(UPSTREAM)
+    status, body = send(via, "upstream.test:8443", headers={"x-e2e-judge": "deny"})
+    check("the agent gets a 403", status == 403)
+    check("with the fixed text", body == "request refused by policy\n")
+    expect("upstream sees no request", "none", count(posts(), UPSTREAM))
+
+    print(f"over {callout} — a body rule, with no body configured: refused as not sent")
+    reset_journal(UPSTREAM)
+    status, _ = send(via, "upstream.test:8443", headers={"x-e2e-judge": "body"})
+    check("the agent gets a 403", status == 403)
+    expect("upstream sees no request", "none", count(posts(), UPSTREAM))
+
+print("both callouts in one chain — the second leaves the request as it was")
+for target, base, scheme in [
+    ("upstream.test:8443", UPSTREAM, "https"),
+    ("upstream.test", UPSTREAM, "https"),
+    ("upstream-agent-port.test:9443", AGENT_PORT, "https"),
+    ("upstream-plain.test:8080", PLAIN, "http"),
+]:
+    run("envoy-variants", target, base)
+    ticketed(base, scheme=scheme)
+    expect("the sandbox's own x-rail never crosses", "none", count(FORGED, base))
+    the_agents_own_headers_cross(base)
+
+
+class _Recorder:
+    """A plain HTTP server that keeps every byte it is sent, so a request cut
+    short, or headers sent alone, still show. WireMock's journal only has whole
+    requests."""
+
+    def __init__(self, port):
+        self._received = bytearray()
+        self._lock = threading.Lock()
+        server = socket.create_server(("0.0.0.0", port))
+        threading.Thread(target=self._serve, args=(server,), daemon=True).start()
+
+    def saw(self, text):
+        with self._lock:
+            return text.encode() in self._received
+
+    def _serve(self, server):
+        while True:
+            connection, _ = server.accept()
+            threading.Thread(
+                target=self._handle, args=(connection,), daemon=True
+            ).start()
+
+    def _handle(self, connection):
+        with connection:
+            pending = b""
+            while data := connection.recv(65536):
+                with self._lock:
+                    self._received += data
+                pending += data
+                while (end := _request_end(pending)) is not None:
+                    pending = pending[end:]
+                    connection.sendall(b"HTTP/1.1 200 OK\r\ncontent-length: 0\r\n\r\n")
+
+
+def _request_end(data):
+    """Where the first whole request in `data` ends, or None."""
+    head_end = data.find(b"\r\n\r\n")
+    if head_end < 0:
+        return None
+    head_end += 4
+    head = data[:head_end].lower()
+    if b"transfer-encoding: chunked" in head:
+        last = data.find(b"0\r\n\r\n", head_end)
+        return None if last < 0 else last + 5
+    length = 0
+    for line in head.split(b"\r\n"):
+        if line.startswith(b"content-length:"):
+            length = int(line.split(b":", 1)[1])
+    return head_end + length if len(data) >= head_end + length else None
+
+
+def upload(port, path, parts):
+    """A JSON body the judge reads, sent in `parts` a moment apart, through
+    the ext_proc listener on `port`, to the recorder."""
+
+    def slowly():
+        for part in parts:
+            time.sleep(0.3)
+            yield part
+
+    connection = http.client.HTTPConnection(
+        "envoy-variants", port, timeout=TIMEOUT_SECONDS
+    )
+    try:
+        connection.request(
+            "POST",
+            path,
+            body=slowly(),
+            headers={
+                "Host": "driver:18080",
+                "Content-Type": "application/json",
+                "x-e2e-judge": "body",
+            },
+            encode_chunked=True,
+        )
+        response = connection.getresponse()
+        return response.status, response.read().decode()
+    finally:
+        connection.close()
+
+
+recorder = _Recorder(18080)
+for mode, port in [
+    ("buffered", 15011),
+    ("buffered-partial", 15012),
+    ("streamed", 15013),
+    ("streamed-without-waiting", 15014),
+    ("full-duplex", 15015),
+]:
+    print(f"ext_proc {mode} — a body the judge allows arrives whole")
+    tool = f'"{mode}-tool"}}'.encode()
+    status, _ = upload(port, f"/{mode}/allowed", [b'{"tool": ', tool])
+    check("the agent gets the upstream's 200", status == 200)
+    check(
+        "the upstream gets the headers and the body",
+        recorder.saw(f"/{mode}/allowed") and recorder.saw(f'"{mode}-tool"'),
+    )
+
+    print(f"ext_proc {mode} — a body the judge refuses: nothing reaches the upstream")
+    status, body = upload(port, f"/{mode}/denied", [b'{"deny": ', b"true}"])
+    check("the agent gets a 403", status == 403)
+    check("with the fixed text", body == "request refused by policy\n")
+    check(
+        "not even the headers reach the upstream", not recorder.saw(f"/{mode}/denied")
+    )
 
 finish()

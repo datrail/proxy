@@ -18,7 +18,7 @@ from envoy.service.auth.v3 import external_auth_pb2_grpc
 from envoy.service.ext_proc.v3 import external_processor_pb2_grpc
 
 from proxy.core.body import get_body_limits, get_body_policy, get_body_timeout
-from proxy.core.judge import get_judge_failure_verdict
+from proxy.core.judge import AllowAll, Judge, get_judge_failure_verdict
 from proxy.core.lifecycle import build_holder, health_payload, running
 from proxy.core.logs import configure_logging
 from proxy.core.settings import ConfigError, plugin_enabled
@@ -149,7 +149,9 @@ async def _run(
     return 0
 
 
-def main() -> int:
+def main(judge: Judge | None = None) -> int:
+    """Run until stopped. `judge` is `AllowAll` unless given: the e2e passes
+    its own."""
     configure_logging()
     try:
         enabled = plugin_enabled()
@@ -157,6 +159,7 @@ def main() -> int:
         holder = build_holder()
         socket_path = get_socket_path()
         judging = Judging(
+            judge=judge or AllowAll(),
             on_failure=get_judge_failure_verdict(),
             body_limits=get_body_limits(),
             body_policy=get_body_policy(),

@@ -96,11 +96,14 @@ The agent's requests go to Envoy on `http://envoy:15001`, with the target in
 `Host`. That is the request an intercepted agent would send, without the
 interception itself, which this stack doesn't test.
 
-Envoy runs [`envoy-grpc/envoy.yaml`](envoy-grpc/envoy.yaml), with the test
-CA in place of the system bundle, and calls `ext` on a shared unix socket.
+Envoy runs [`envoy-grpc/envoy.yaml`](envoy-grpc/envoy.yaml), the ext_authz
+example, with the test CA in place of the system bundle, and calls `ext` on a
+shared unix socket. [`envoy-ext-proc.yaml`](envoy-grpc/envoy-ext-proc.yaml) is
+the same over ext_proc, headers only. [`envoy-variants.yaml`](envoy-grpc/envoy-variants.yaml)
+is never an example: both callouts in one chain, and ext_proc in each body mode.
 
-Each Envoy runs the same config. They differ in the extension they
-call, and `envoy-misresolved` in where it resolves `upstream.test`.
+Most Envoys run the ext_authz example. They differ in the extension they call,
+and `envoy-misresolved` in where it resolves `upstream.test`.
 
 | Service | Configuration | What it should see |
 |---|---|---|
@@ -111,6 +114,9 @@ call, and `envoy-misresolved` in where it resolves `upstream.test`.
 | `envoy-passthrough` + `ext-passthrough` | the plugin off | neither header, still over HTTPS |
 | `envoy-misresolved` | calls `ext`, resolves `upstream.test` to `evil` | a 503: the certificate is for `evil.test` |
 | `envoy-no-ext` | a socket nothing serves on | forwarded with the x-rail headers removed and no status; a protected host isn't routed |
+| `envoy-judged` + `ext-judged` | the ext_authz example; the e2e's judge | a 403 for a request refused on its headers, and for a body rule with no body sent; the upstream sees neither |
+| `envoy-ext-proc` + `ext-judged` | the ext_proc example | the ticket, routed as over ext_authz; the same two 403s |
+| `envoy-variants` + `ext-judged` | `envoy-variants.yaml` | both callouts: the ticket, routed once, with nothing more changed by the second call; each body mode: an allowed body arrives whole, a refused one sends nothing upstream, not even its headers |
 | `image-user` | the extension's image, sleeping | nothing: its healthcheck asserts the uid |
 
 Every extension protects `upstream.test:8443`, `upstream-agent-port.test`,
@@ -124,6 +130,17 @@ Every extension protects `upstream.test:8443`, `upstream-agent-port.test`,
 | `upstream-plain` | HTTP on 8080 | `upstream-plain.test:8080`: an `http://` entry isn't upgraded |
 | `open` | HTTP on 8080 | `open.test:8080`: not protected, so left alone |
 | `evil` | HTTPS on 8443, certificate for `evil.test` only; `upstream.test` on `envoy-misresolved`'s network | only directly, as the driver's check that it serves TLS |
+
+`ext-judged` is the extension's image with
+[`envoy-grpc/judge.py`](envoy-grpc/judge.py) mounted as its command: a judge
+the request steers with `x-e2e-judge`. `deny` refuses it on its headers;
+`body` asks for the body and refuses a JSON one with `"deny": true`. The image
+itself only ever runs the default judge, which allows everything.
+
+The body modes send to the driver itself, `driver:18080`: a server that keeps
+every byte it's sent, since WireMock's journal shows only whole requests, and
+headers sent alone would never show there. The driver uploads each body in
+parts, a moment apart, so the extension holds the parts it gets first.
 
 Every request carries a forged `x-rail`, `x-rail-status`, `x-rail-foo`,
 `x_rail` and `x_rail_status`, which never cross, and the agent's own `x-trace`
