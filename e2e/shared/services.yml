@@ -4,7 +4,8 @@
 
 services:
   wiremock:
-    image: wiremock/wiremock:3.9.1
+    # Pinned by digest: a tag is mutable, and this gates releases.
+    image: wiremock/wiremock:3.9.1@sha256:8fe02bc3f9b63deb1454d41750dbaf081adf4b3e8c74fd8e31f790bee5647b88
     # Every stub set templates its answers: Rail Center's expires_at, and the
     # JSON-RPC id and protocolVersion the MCP upstream echoes back.
     command: ["--global-response-templating"]
@@ -28,7 +29,7 @@ services:
   # is healthy once the files are written. A stack that uses it declares the
   # volume.
   certs:
-    image: alpine/openssl:3.5.9
+    image: alpine/openssl:3.5.9@sha256:bf66acee200e5f4959af448eafc9be0634d8ecdf42205873c83cd5ddffb1cdfd
     entrypoint: ["sh", "-c", "sh /certs.sh /certs && exec sleep infinity"]
     # `sleep` does not handle SIGTERM; nothing to flush.
     stop_grace_period: 0s

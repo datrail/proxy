@@ -43,7 +43,7 @@ The proxy sits between the agent and its MCP servers. With
 attaches it to what the agent sends; if no valid ticket is available it
 forwards no identity and sets an `x-rail-status` reason. An `x-rail` header
 the agent supplies never crosses. The fetch response is defined by
-[`spec/ticket-fetch.schema.json`](spec/ticket-fetch.schema.json).
+[`schemas/ticket-fetch.schema.json`](schemas/ticket-fetch.schema.json).
 
 Both forms forward the agent's own headers beside the ticket, but put the proxy
 in that path differently: see

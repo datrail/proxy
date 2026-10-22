@@ -66,8 +66,9 @@ variable can't express. Each upstream's tools are re-exposed as
 `<name>_<tool>`. Start from [`bridge.yaml.example`](bridge.yaml.example).
 
 Required: the proxy stops at startup without one. Defaults to
-`standalone/bridge.yaml`, relative to the working directory. The image sets
-it to `/app/standalone/bridge.yaml` and ships no file there, so mount one.
+`standalone/bridge.yaml`, relative to the working directory. The image's
+working directory is `/app`, so that is `/app/standalone/bridge.yaml`, and it
+ships no file there, so mount one.
 
 #### `RAIL_PROXY_BIND`
 

@@ -10,6 +10,7 @@ from lib import (
     ANY_XRAIL,
     FORGED,
     FORGED_STATUS,
+    TIMEOUT_SECONDS,
     check,
     count,
     drive,
@@ -53,7 +54,7 @@ def send(via, target, path="/mcp", method="POST"):
     )
     opener = urllib.request.build_opener(_NoRedirect)
     try:
-        with opener.open(request) as response:
+        with opener.open(request, timeout=TIMEOUT_SECONDS) as response:
             return response.status, response.read().decode()
     except urllib.error.HTTPError as exc:
         return exc.code, exc.read().decode()
@@ -153,7 +154,7 @@ print("upstream.test misresolved to evil — the certificate check refuses it")
 # refused certificate.
 context = ssl.create_default_context(cafile="/certs/ca.crt")
 with urllib.request.urlopen(
-    "https://evil.test:8443/__admin/health", context=context
+    "https://evil.test:8443/__admin/health", context=context, timeout=TIMEOUT_SECONDS
 ) as response:
     check("evil.test answers over HTTPS on 8443", response.status == 200)
 # Then the request: Envoy connects to evil, which answers TLS, but evil sees no
@@ -195,7 +196,8 @@ urllib.request.urlopen(
         data=json.dumps(stub).encode(),
         method="POST",
         headers={"Content-Type": "application/json"},
-    )
+    ),
+    timeout=TIMEOUT_SECONDS,
 ).read()
 reset_journal(OPEN)
 status, _ = send("envoy", "upstream.test:8443", path="/redirect", method="GET")

@@ -26,7 +26,8 @@ and, from the first release that has it, `ghcr.io/datrail/proxy-envoy-grpc`.
   an unreadable major refuses to start.
 - `GET /health`, reporting whether the plugin is on and what is held — a
   fingerprint and an expiry, never the ticket and never the issuer's address.
-- `spec/ticket-fetch.schema.json`, pinning the fetch response this proxy parses.
+- `schemas/ticket-fetch.schema.json`, pinning the fetch response this proxy
+  parses.
 - `e2e/`: a stack in containers per interface, asserting what reaches an upstream
   in each ticket state: held, not found, expired, issuer unreachable and off.
 - `proxy-envoy-grpc`, the proxy as a service Envoy calls on each request
@@ -41,7 +42,7 @@ and, from the first release that has it, `ghcr.io/datrail/proxy-envoy-grpc`.
 
 ### Changed
 
-- **The source is a uv workspace**: `proxy-core`, and a package per interface, `proxy-standalone` and `proxy-envoy-grpc` (importing as `proxy.core`, `proxy.standalone` and `proxy.envoy_grpc`), so each image installs only what it runs. The `ghcr.io/datrail/proxy` image is unchanged — same name, user, port, environment and installed packages — except that its command is now `python -m proxy.standalone` and its Python environment lives in `/app/.venv`, first on `PATH`. The mount point for the bridge file is still `/app/standalone/bridge.yaml`. Every dependency, transitive ones included, is now pinned by `uv.lock`, and running from source needs Python 3.12.
+- **The source is a uv workspace**: `proxy-core`, and a package per interface, `proxy-standalone` and `proxy-envoy-grpc` (importing as `proxy.core`, `proxy.standalone` and `proxy.envoy_grpc`), so each image installs only what it runs. The `ghcr.io/datrail/proxy` image is unchanged — same name, user, port and installed packages — except that its command is now `python -m proxy.standalone` and its Python environment lives in `/app/.venv`, first on `PATH`. The mount point for the bridge file is still `/app/standalone/bridge.yaml`. Every dependency, transitive ones included, is now pinned by `uv.lock`, and running from source needs Python 3.12.
 - **proxy-standalone forwards the agent's own headers**, as proxy-envoy-grpc
   does. Each upstream request carries the headers of the agent request that
   caused it, `Authorization` included, except any `x-rail` or `x-rail-*`
@@ -58,6 +59,11 @@ and, from the first release that has it, `ghcr.io/datrail/proxy-envoy-grpc`.
   loopback.** Envoy attaches the agent's ticket to whatever reaches it, and the
   e2e config it points to binds `0.0.0.0`, which a sidecar copying it exposes to
   every container on the agent's network.
+- **The `ghcr.io/datrail/proxy` image no longer sets `RAIL_PROXY_BIND`,
+  `RAIL_PROXY_PORT` and `RAIL_PROXY_CONFIG_FILE`.** The values it set are the
+  defaults, `0.0.0.0`, `8091` and `standalone/bridge.yaml` under its working
+  directory `/app`, so behaviour is unchanged unless the container is started
+  in another working directory; `docker inspect` no longer lists them.
 
 ### Removed
 

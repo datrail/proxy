@@ -19,9 +19,9 @@ from lib import (
 WITH_TICKET = equal_to("x-rail", "e2e-opaque-token")
 
 
-def run(host):
+def run(host, port=8091):
     reset_journal()
-    drive(f"http://{host}:8091/mcp", AGENT_HEADERS)
+    drive(f"http://{host}:{port}/mcp", AGENT_HEADERS)
 
 
 def the_boundary_holds():
@@ -55,8 +55,8 @@ print("expired proxy — the only ticket Rail Center has for it has lapsed")
 run("proxy-expired")
 fails_closed_with("expired")
 
-print("issuer-down proxy — Rail Center answers it with a 500")
-run("proxy-issuer-down")
+print("issuer-down proxy — Rail Center answers it with a 500, on port 9100")
+run("proxy-issuer-down", port=9100)
 fails_closed_with("issuer-unreachable")
 
 print("pass-through proxy — no control plane configured")

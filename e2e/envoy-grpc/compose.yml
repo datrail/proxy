@@ -1,6 +1,6 @@
 # The Envoy extension's e2e stack; e2e/README.md says what each service is for.
 #
-#   docker compose -f e2e/envoy-grpc/compose.yml up --build --abort-on-container-exit --exit-code-from driver
+#   docker compose -f e2e/envoy-grpc/compose.yml up --build --force-recreate --abort-on-container-exit --exit-code-from driver
 #
 # The result is the driver container's exit code.
 
@@ -24,7 +24,7 @@ x-attached: &attached
   RAIL_PROXY_PROTECTED_HOSTS: &protected upstream.test:8443,upstream-agent-port.test,upstream-443.test,http://upstream-plain.test
 
 x-envoy: &envoy
-  image: envoyproxy/envoy:v1.39.2
+  image: envoyproxy/envoy:v1.39.2@sha256:460f8c329f24b2e1c7c5af64cb314a6f351ad1c262ba77b135ac46b35ebd5f85
   environment:
     # The image's entrypoint puts its `envoy` user in this group, which is the
     # one the extension's socket is shared with.
@@ -284,7 +284,7 @@ services:
       retries: 3
 
   driver:
-    image: python:3.12-slim
+    image: python:3.12-slim@sha256:05cda9777409a9c3ffddd94a4c476b79f0769a0b4857f0c7ed9226b6800b0d6f
     networks: [default, misresolved]
     volumes:
       - ./driver.py:/e2e/driver.py:ro

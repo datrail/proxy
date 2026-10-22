@@ -8,6 +8,8 @@ import urllib.error
 import urllib.request
 
 UPSTREAM = "http://upstream:8080"
+# Per request: a hung server ends the run with a traceback, not at the job's limit.
+TIMEOUT_SECONDS = 15
 
 fails = 0
 
@@ -19,7 +21,7 @@ def _request(method, url, body=None, headers=None):
         method=method,
         headers={"Content-Type": "application/json", **(headers or {})},
     )
-    with urllib.request.urlopen(request) as response:
+    with urllib.request.urlopen(request, timeout=TIMEOUT_SECONDS) as response:
         return response.read().decode()
 
 

@@ -1,7 +1,8 @@
 """Obtaining this proxy's own ticket from Rail Center.
 
-The wire contract is `spec/ticket-fetch.schema.json`; `fixtures/tickets.json`
-is the instance, and the first test here is what keeps the two in step.
+The wire contract is `schemas/ticket-fetch.schema.json`;
+`fixtures/tickets.json` is the instance, and the first test here is what keeps
+the two in step.
 """
 
 import base64
@@ -26,7 +27,9 @@ from proxy.core.xrail_auth import (
     token_fingerprint,
 )
 
-SPEC = pathlib.Path(__file__).resolve().parents[2] / "spec" / "ticket-fetch.schema.json"
+SPEC = (
+    pathlib.Path(__file__).resolve().parents[2] / "schemas" / "ticket-fetch.schema.json"
+)
 FIXTURE = pathlib.Path(__file__).resolve().parent / "fixtures" / "tickets.json"
 
 #: An injected clock, so `2026-07-28T10:15:00Z` in the fixture is a fixed

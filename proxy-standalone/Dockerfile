@@ -38,9 +38,6 @@ RUN useradd --no-create-home --uid 10001 railproxy
 USER 10001
 
 # bridge.yaml is not in the image; mount one: -v ./bridge.yaml:/app/standalone/bridge.yaml:ro
-ENV RAIL_PROXY_BIND=0.0.0.0 \
-    RAIL_PROXY_PORT=8091 \
-    RAIL_PROXY_CONFIG_FILE=/app/standalone/bridge.yaml
 
 # The default port; RAIL_PROXY_PORT moves the listener but not this.
 EXPOSE 8091

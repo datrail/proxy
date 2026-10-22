@@ -18,12 +18,16 @@ venv/
 
 # Runtime config — copied from bridge.yaml.example and edited per deployment
 /bridge.yaml
-/standalone/bridge.yaml
+/proxy-standalone/bridge.yaml
+
+# Build and packaging artefacts
+dist/
 
 # Tool caches
 .pytest_cache/
 .ruff_cache/
 .coverage
+.coverage.*
 htmlcov/
 
 # IDE
