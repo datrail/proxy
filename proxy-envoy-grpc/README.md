@@ -103,11 +103,10 @@ arrives, protected requests get `x-rail-status: issuer-unreachable`.
   its socket, prints its status as JSON, and exits 0 when it answers, whether
   or not a ticket is held. Use it as an exec probe: the service has no TCP
   port, since anything on localhost in a pod is reachable by the agent.
+  Not the standard `grpc.health.v1`: no platform's gRPC probe reaches a unix
+  socket, and this answers the same JSON as standalone's `/health`.
 
 [`e2e/envoy-grpc`](../e2e/envoy-grpc/compose.yml) runs all of this.
-
-From source: `make init`, then `uv run python -m proxy.envoy_grpc` with the
-variables below.
 
 ## Configuration
 
@@ -128,3 +127,13 @@ Required when `RAIL_PLUGIN_ENABLED` is on.
 #### `RAIL_PROXY_EXT_SOCKET`
 
 The unix socket Envoy calls. Defaults to `/run/rail/ext.sock`.
+
+## From source
+
+```bash
+make init
+RAIL_PROXY_EXT_SOCKET=/tmp/rail-ext.sock uv run python -m proxy.envoy_grpc
+```
+
+The default socket's directory, `/run/rail`, is made by the image, so a run from
+source names another. The other variables are as above.
