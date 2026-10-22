@@ -246,7 +246,7 @@ def _build_request(headers: list[tuple[str, str]]) -> Request:
 
 def _answer(outcome: Outcome) -> external_processor_pb2.ProcessingResponse:
     if isinstance(outcome.verdict, Deny):
-        return _denied()
+        return _build_denied_response()
     decision = outcome.decision
     if not decision.headers and not decision.remove:
         return external_processor_pb2.ProcessingResponse(
@@ -273,7 +273,7 @@ def _answer(outcome: Outcome) -> external_processor_pb2.ProcessingResponse:
     )
 
 
-def _denied() -> external_processor_pb2.ProcessingResponse:
+def _build_denied_response() -> external_processor_pb2.ProcessingResponse:
     return external_processor_pb2.ProcessingResponse(
         immediate_response=external_processor_pb2.ImmediateResponse(
             status=http_status_pb2.HttpStatus(code=DENIED_STATUS),

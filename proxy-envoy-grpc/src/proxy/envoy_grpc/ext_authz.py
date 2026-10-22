@@ -110,11 +110,11 @@ def _get_headers(http) -> list[tuple[str, str]]:
 
 def _answer(outcome: Outcome) -> external_auth_pb2.CheckResponse:
     if isinstance(outcome.verdict, Deny):
-        return _denied()
-    return _ok(outcome.decision)
+        return _build_denied_response()
+    return _build_ok_response(outcome.decision)
 
 
-def _ok(decision: Decision) -> external_auth_pb2.CheckResponse:
+def _build_ok_response(decision: Decision) -> external_auth_pb2.CheckResponse:
     return external_auth_pb2.CheckResponse(
         status=status_pb2.Status(code=code_pb2.OK),
         ok_response=external_auth_pb2.OkHttpResponse(
@@ -130,7 +130,7 @@ def _ok(decision: Decision) -> external_auth_pb2.CheckResponse:
     )
 
 
-def _denied() -> external_auth_pb2.CheckResponse:
+def _build_denied_response() -> external_auth_pb2.CheckResponse:
     return external_auth_pb2.CheckResponse(
         status=status_pb2.Status(code=code_pb2.PERMISSION_DENIED),
         denied_response=external_auth_pb2.DeniedHttpResponse(
