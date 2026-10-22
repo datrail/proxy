@@ -21,7 +21,7 @@ from core_support import wound_holder, xrail_params
 from proxy.core import lifecycle
 from proxy.core.settings import ConfigError
 from proxy.core.xrail_auth import TicketHolder, Token
-from proxy.envoy_grpc import probe_health, server
+from proxy.envoy_grpc import ext_authz, probe_health, server
 from proxy.envoy_grpc import settings as envoy_settings
 
 _ORDINARY = {
@@ -144,7 +144,7 @@ async def test_a_failure_while_deciding_is_answered_ok_with_no_changes(
         # The message is a header value, as an exception's message can be.
         raise ValueError(secret)
 
-    monkeypatch.setattr(server, "decide", broken)
+    monkeypatch.setattr(ext_authz, "decide", broken)
     srv = await server._start_server(
         wound_holder(ticket="the-ticket"), True, _protected(monkeypatch), socket_path
     )
@@ -299,8 +299,9 @@ async def test_a_stale_socket_it_cannot_remove_is_a_configuration_error(
         {"RAIL_PROXY_PROTECTED_HOSTS": "ftp://mcp.example.com"},
         {"RAIL_PLUGIN_ENABLED": "true"},
         {"RAIL_PLUGIN_ENABLED": "maybe"},
+        {"RAIL_PROXY_ON_JUDGE_FAILURE": "refuse"},
     ],
-    ids=["bad-entry", "plugin-on-without-rail-center", "bad-flag"],
+    ids=["bad-entry", "plugin-on-without-rail-center", "bad-flag", "bad-judge-failure"],
 )
 def test_a_configuration_error_exits_2(monkeypatch, env):
     for name, value in env.items():
