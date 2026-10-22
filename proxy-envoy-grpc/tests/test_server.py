@@ -21,7 +21,7 @@ from core_support import wound_holder, xrail_params
 from proxy.core import lifecycle
 from proxy.core.settings import ConfigError
 from proxy.core.xrail_auth import TicketHolder, Token
-from proxy.envoy_grpc import ext_authz, probe_health, server
+from proxy.envoy_grpc import outcome, probe_health, server
 from proxy.envoy_grpc import settings as envoy_settings
 
 _ORDINARY = {
@@ -144,7 +144,7 @@ async def test_a_failure_while_deciding_is_answered_ok_with_no_changes(
         # The message is a header value, as an exception's message can be.
         raise ValueError(secret)
 
-    monkeypatch.setattr(ext_authz, "decide", broken)
+    monkeypatch.setattr(outcome, "decide", broken)
     srv = await server._start_server(
         wound_holder(ticket="the-ticket"), True, _protected(monkeypatch), socket_path
     )

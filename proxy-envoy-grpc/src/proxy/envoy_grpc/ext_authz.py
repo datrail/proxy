@@ -5,26 +5,15 @@ answer is OK with the headers to set and remove, or `403` when the request is
 refused.
 """
 
-from collections.abc import Mapping
-
 from envoy.config.core.v3.base_pb2 import HeaderValue, HeaderValueOption
 from envoy.service.auth.v3 import external_auth_pb2, external_auth_pb2_grpc
 from envoy.type.v3 import http_status_pb2
 from google.rpc import code_pb2, status_pb2
 
-from proxy.core.judge import (
-    DENIED_BODY,
-    DENIED_CONTENT_TYPE,
-    DENIED_STATUS,
-    Allow,
-    Deny,
-    Judge,
-)
+from proxy.core.judge import DENIED_BODY, DENIED_CONTENT_TYPE, DENIED_STATUS, Deny
 from proxy.core.request import Request, build_request
-from proxy.core.xrail_auth import TicketHeaders, TicketHolder, outbound_headers
-from proxy.envoy_grpc.decision import Decision, decide
-from proxy.envoy_grpc.outcome import Outcome, get_outcome
-from proxy.envoy_grpc.settings import ProtectedHost
+from proxy.envoy_grpc.decision import Decision
+from proxy.envoy_grpc.outcome import Outcome, Pipeline
 
 # Added by Envoy when it sends the body: how it came, not what the agent sent.
 _PARTIAL_BODY_HEADER = "x-envoy-auth-partial-body"
@@ -33,36 +22,16 @@ _PARTIAL_BODY_HEADER = "x-envoy-auth-partial-body"
 class ExtAuthz(external_auth_pb2_grpc.AuthorizationServicer):
     """Answers Envoy's `Check` with the outcome for the request."""
 
-    def __init__(
-        self,
-        holder: TicketHolder | None,
-        protected_hosts: Mapping[str, ProtectedHost],
-        judge: Judge,
-        on_judge_failure: Allow | Deny,
-    ) -> None:
-        self._holder = holder
-        self._protected_hosts = protected_hosts
-        self._ticket_headers = TicketHeaders(holder)
-        self._judge = judge
-        self._on_judge_failure = on_judge_failure
+    def __init__(self, pipeline: Pipeline) -> None:
+        self._pipeline = pipeline
 
     async def Check(self, request, context):
         http = request.attributes.request.http
-        outcome = get_outcome(
-            lambda: self._judge.judge_headers(_build_request(http)),
-            lambda: self._decide(request),
-            self._on_judge_failure,
+        names = list(http.headers) or [h.key for h in http.header_map.headers]
+        outcome = self._pipeline.get_outcome(
+            lambda: _build_request(http), http.host, names
         )
         return _answer(outcome)
-
-    def _decide(self, request) -> Decision:
-        http = request.attributes.request.http
-        names = list(http.headers) or [h.key for h in http.header_map.headers]
-        xrail_headers = outbound_headers(self._holder)
-        decision = decide(http.host, names, self._protected_hosts, xrail_headers)
-        if decision.headers:
-            self._ticket_headers.report(http.host, xrail_headers)
-        return decision
 
 
 def _build_request(http) -> Request:

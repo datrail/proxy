@@ -1,7 +1,9 @@
 """The gRPC server Envoy calls on each request, and the process around it.
 
-It serves ext_authz's `Check` (`ext_authz.py`). The same server answers a
-status method, for a health probe on the same unix socket.
+It serves ext_authz's `Check` (`ext_authz.py`) and ext_proc's `Process`
+(`ext_proc.py`), both always: Envoy names only the cluster, and the method
+picks the servicer. The same server answers a status method, for a health
+probe on the same unix socket.
 """
 
 import asyncio
@@ -13,6 +15,7 @@ from pathlib import Path
 
 import grpc
 from envoy.service.auth.v3 import external_auth_pb2_grpc
+from envoy.service.ext_proc.v3 import external_processor_pb2_grpc
 
 from proxy.core.judge import (
     Allow,
@@ -26,6 +29,8 @@ from proxy.core.logs import configure_logging
 from proxy.core.settings import ConfigError, plugin_enabled
 from proxy.core.xrail_auth import TicketHolder
 from proxy.envoy_grpc.ext_authz import ExtAuthz
+from proxy.envoy_grpc.ext_proc import ExtProc
+from proxy.envoy_grpc.outcome import Pipeline
 from proxy.envoy_grpc.settings import (
     ProtectedHost,
     get_protected_hosts,
@@ -75,14 +80,17 @@ async def _start_server(
     path can't be used. The judge is `AllowAll` and a judge failure is denied
     unless given."""
     server = grpc.aio.server()
+    pipeline = Pipeline(
+        holder,
+        protected_hosts,
+        judge or AllowAll(),
+        on_judge_failure or Deny(),
+    )
     external_auth_pb2_grpc.add_AuthorizationServicer_to_server(
-        ExtAuthz(
-            holder,
-            protected_hosts,
-            judge or AllowAll(),
-            on_judge_failure or Deny(),
-        ),
-        server,
+        ExtAuthz(pipeline), server
+    )
+    external_processor_pb2_grpc.add_ExternalProcessorServicer_to_server(
+        ExtProc(pipeline), server
     )
     server.add_generic_rpc_handlers((_status_handler(holder, enabled),))
     try:
@@ -99,7 +107,7 @@ async def _start_server(
             f"RAIL_PROXY_EXT_SOCKET: cannot use {socket_path}: {exc.strerror}"
         ) from exc
     await server.start()
-    log.info("serving Envoy's checks on %s", socket_path)
+    log.info("serving Envoy's callouts on %s", socket_path)
     return server
 
 

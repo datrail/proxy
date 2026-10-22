@@ -7,7 +7,7 @@ from google.rpc import code_pb2
 
 from core_support import wound_holder
 from proxy.core.judge import Allow, AllowAll, Deny, NeedsBody
-from proxy.envoy_grpc import ext_authz
+from proxy.envoy_grpc import ext_authz, outcome
 from proxy.envoy_grpc import settings as envoy_settings
 
 _SECRET = "Bearer agent-secret"
@@ -33,10 +33,12 @@ def _check_request(headers: dict[str, str]) -> external_auth_pb2.CheckRequest:
 
 async def _check(monkeypatch, judge, on_judge_failure, headers=None):
     servicer = ext_authz.ExtAuthz(
-        wound_holder(ticket="the-ticket"),
-        _protected(monkeypatch),
-        judge,
-        on_judge_failure,
+        outcome.Pipeline(
+            wound_holder(ticket="the-ticket"),
+            _protected(monkeypatch),
+            judge,
+            on_judge_failure,
+        )
     )
     return await servicer.Check(_check_request(headers or {}), None)
 
@@ -108,7 +110,9 @@ async def test_the_judge_sees_the_request_without_x_rail_or_envoy_headers(
 async def test_the_judge_sees_headers_sent_as_a_header_map(monkeypatch):
     """Envoy's `encode_raw_headers` sends `header_map` instead of `headers`."""
     judge = _Recording()
-    servicer = ext_authz.ExtAuthz(None, _protected(monkeypatch), judge, Deny())
+    servicer = ext_authz.ExtAuthz(
+        outcome.Pipeline(None, _protected(monkeypatch), judge, Deny())
+    )
     request = external_auth_pb2.CheckRequest()
     http = request.attributes.request.http
     http.host = "mcp.example.com"
@@ -130,7 +134,7 @@ async def test_a_denied_request_gets_403_and_no_changes(monkeypatch):
     def never(*_args):
         raise AssertionError("a denied request is not decided on")
 
-    monkeypatch.setattr(ext_authz, "decide", never)
+    monkeypatch.setattr(outcome, "decide", never)
 
     response = await _check(monkeypatch, _Answering(Deny()), Allow())
 
