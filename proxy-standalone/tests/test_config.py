@@ -29,8 +29,8 @@ async def _hold(source):
 
 
 def test_a_missing_config_file_is_reported_by_path(write_config, monkeypatch, tmp_path):
-    """The image bakes RAIL_PROXY_CONFIG_FILE to a path holding no file, so a
-    container started without a mounted config lands here."""
+    """The image ships no file at the default path, so a container started
+    without a mounted config lands here."""
     monkeypatch.setenv("RAIL_PROXY_CONFIG_FILE", str(tmp_path / "absent.yaml"))
 
     # The path is what the message is for: an operator seeing this needs to know

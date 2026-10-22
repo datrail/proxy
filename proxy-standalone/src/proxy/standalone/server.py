@@ -126,11 +126,10 @@ def _check_schema_version(path: Path, raw: Any) -> None:
 def load_servers() -> list[dict[str, Any]]:
     """Read `mcp.servers` from the config file.
 
-    Raises rather than serving a configuration nobody meant: the image bakes
-    `RAIL_PROXY_CONFIG_FILE` to a path that holds no file, so a container
-    started without a mounted config stops here instead of coming up with no
-    upstream and answering every tool list with nothing. `main` turns this into
-    exit 2.
+    Raises rather than serving a configuration nobody meant: the image ships no
+    file at the default path, so a container started without a mounted config
+    stops here instead of coming up with no upstream and answering every tool
+    list with nothing. `main` turns this into exit 2.
     """
     path = config_file()
     try:

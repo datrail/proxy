@@ -58,6 +58,11 @@ and, from the first release that has it, `ghcr.io/datrail/proxy-envoy-grpc`.
   loopback.** Envoy attaches the agent's ticket to whatever reaches it, and the
   e2e config it points to binds `0.0.0.0`, which a sidecar copying it exposes to
   every container on the agent's network.
+- **The `ghcr.io/datrail/proxy` image no longer sets `RAIL_PROXY_BIND`,
+  `RAIL_PROXY_PORT` and `RAIL_PROXY_CONFIG_FILE`.** The values it set are the
+  defaults, `0.0.0.0`, `8091` and `standalone/bridge.yaml` under its working
+  directory `/app`, so behaviour is unchanged unless the container is started
+  in another working directory; `docker inspect` no longer lists them.
 
 ### Removed
 
