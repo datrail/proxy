@@ -42,5 +42,6 @@ USER 10001
 # a volume here that Envoy's container shares.
 VOLUME /run/rail
 
-# Exec form, so python is PID 1 and receives SIGTERM.
+# Exec form, so python is PID 1 and receives SIGTERM. CMD rather than ENTRYPOINT,
+# so a replacement command runs as given.
 CMD ["python", "-m", "proxy.envoy_grpc"]
