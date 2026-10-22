@@ -2,8 +2,8 @@
 
 `proxy.core`, DatRail Proxy's vendor-neutral core: obtaining this proxy's
 `x-rail` ticket from Rail Center and deciding what goes on each outbound
-request, plus what every interface runs the same way: its settings, logging
-and health. It imports no other member of this workspace; every interface,
+request, judging requests, plus what every interface runs the same way: its
+settings, logging and health. It imports no other member of this workspace; every interface,
 [proxy-standalone](../proxy-standalone/README.md) and
 [proxy-envoy-grpc](../proxy-envoy-grpc/README.md), builds on it. See the
 [main README](../README.md) for the whole.
@@ -43,6 +43,25 @@ reason in `x-rail-status`:
 An expired or absent ticket is never sent, and enforcement belongs to the
 gateway, where an absent `x-rail` denies. The reason never goes in `x-rail`
 itself.
+
+## Judging requests
+
+Judging lives here, so it never depends on the interface that runs it. Today
+proxy-envoy-grpc does; each interface that judges builds the request from what
+it received and turns the verdict into its own answer.
+
+- `proxy.core.request`: `Request`, the method, scheme, authority, path and
+  headers, as received and never parsed, without any `x-rail` header.
+- `proxy.core.judge`: the `Judge` and its verdicts. It answers once the
+  headers are in (`Allow`, `Deny` or `NeedsBody`), and, when it needs the body,
+  again once the body is read. `AllowAll` is the judge until rules exist. A
+  refused request is answered `403` with the text `request refused by policy`.
+- `proxy.core.body`: reading a body under bounds, for a judge that needs it.
+  `BodyBudget` and `BodyQuota` bound what one body, and every body at once,
+  may read; decoding and parsing a body make copies on top. `build_view` decodes a body by `Content-Encoding` (`gzip`,
+  `identity`), never past the cap, and parses it by `Content-Type` (JSON):
+  the judge sees that view, never the raw bytes. A body that can't be judged
+  as it is gets a `Reason`, which `BodyPolicy` turns into a verdict.
 
 ## The process around it
 
@@ -116,3 +135,43 @@ The log level. Defaults to `INFO`.
 
 `RAIL_TICKET_MODE` is retired: set, it stops the proxy at startup, with a
 message saying to use `RAIL_PLUGIN_ENABLED`.
+
+### Judging
+
+Read by an interface that judges requests: proxy-envoy-grpc.
+[Its README](../proxy-envoy-grpc/README.md#judging-requests) says what Envoy
+must send for each.
+
+#### `RAIL_PROXY_ON_JUDGE_FAILURE`
+
+What a request gets when judging it fails, before any verdict: `deny` or
+`allow`, case folded. Defaults to `deny`.
+
+#### `RAIL_PROXY_MAX_BODY_BYTES`
+
+The most of one body read, and decoded, in bytes. Defaults to `8388608`
+(8 MiB), and can't be more than 1 GiB. Past it a body is `too-large`, or
+`decoded-too-large`.
+
+#### `RAIL_PROXY_BODY_BUDGET_BYTES`
+
+The most of every body read at once, in bytes. Defaults to four times
+`RAIL_PROXY_MAX_BODY_BYTES`, and can't be less than it. A body that would pass
+it is `over-budget`. A body counts until the thread judging it ends, even
+when that is after its verdict, as `timed-out`.
+
+#### `RAIL_PROXY_ALLOW_UNREADABLE_BODY`
+
+The reasons a body that can't be judged is let through unjudged,
+comma-separated: any of `not-sent`, `truncated`, `too-large`, `over-budget`,
+`unsupported-encoding`, `decoded-too-large`, `malformed`, `timed-out`. Empty
+by default: every such body is refused.
+
+#### `RAIL_PROXY_BODY_TIMEOUT_SECONDS`
+
+How long decoding, parsing and judging one body may take before it is
+`timed-out`, in seconds: a positive number. Defaults to `0.15`, under Envoy's
+default callout timeouts.
+
+Each of these is checked at start-up: a value that isn't one stops the
+service with exit code 2.

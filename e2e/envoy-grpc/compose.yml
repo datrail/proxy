@@ -189,6 +189,19 @@ services:
     volumes: [ext-issuer-down-socket:/run/rail]
     depends_on: *on-rail-center
 
+  # Registered, with the e2e's judge (judge.py) in place of the default one,
+  # which allows everything. The image is the same; only the command differs.
+  ext-judged:
+    <<: *ext
+    command: ["python", "/e2e/judge.py"]
+    environment:
+      <<: *attached
+      RAIL_SANDBOX_NAME: e2e-sandbox
+    volumes:
+      - ext-judged-socket:/run/rail
+      - ./judge.py:/e2e/judge.py:ro
+    depends_on: *on-rail-center
+
   # The plugin off: no Rail Center, the same protected hosts.
   ext-passthrough:
     <<: *ext
@@ -248,6 +261,39 @@ services:
       - ext-passthrough-socket:/run/rail
       - *test-ca
 
+  # The example configs, each calling the judged extension.
+  envoy-judged:
+    <<: *envoy
+    depends_on:
+      certs: {condition: service_healthy}
+      ext-judged: {condition: service_healthy}
+    volumes:
+      - ./envoy.yaml:/etc/envoy/envoy.yaml:ro
+      - ext-judged-socket:/run/rail
+      - *test-ca
+
+  envoy-ext-proc:
+    <<: *envoy
+    depends_on:
+      certs: {condition: service_healthy}
+      ext-judged: {condition: service_healthy}
+    volumes:
+      - ./envoy-ext-proc.yaml:/etc/envoy/envoy.yaml:ro
+      - ext-judged-socket:/run/rail
+      - *test-ca
+
+  # Both callouts in one chain, and ext_proc in each body mode
+  # (envoy-variants.yaml).
+  envoy-variants:
+    <<: *envoy
+    depends_on:
+      certs: {condition: service_healthy}
+      ext-judged: {condition: service_healthy}
+    volumes:
+      - ./envoy-variants.yaml:/etc/envoy/envoy.yaml:ro
+      - ext-judged-socket:/run/rail
+      - *test-ca
+
   # Calls the registered extension, but resolves upstream.test to evil: it is
   # only on the misresolved network. It reaches the extension through the
   # socket volume, so it needs no other network.
@@ -299,6 +345,7 @@ services:
       ext-expired: {condition: service_healthy}
       ext-issuer-down: {condition: service_healthy}
       ext-passthrough: {condition: service_healthy}
+      ext-judged: {condition: service_healthy}
       envoy: {condition: service_healthy}
       envoy-unregistered: {condition: service_healthy}
       envoy-expired: {condition: service_healthy}
@@ -306,6 +353,9 @@ services:
       envoy-passthrough: {condition: service_healthy}
       envoy-misresolved: {condition: service_healthy}
       envoy-no-ext: {condition: service_healthy}
+      envoy-judged: {condition: service_healthy}
+      envoy-ext-proc: {condition: service_healthy}
+      envoy-variants: {condition: service_healthy}
       upstream-agent-port: {condition: service_healthy}
       upstream-443: {condition: service_healthy}
       upstream-plain: {condition: service_healthy}
@@ -319,4 +369,5 @@ volumes:
   ext-expired-socket:
   ext-issuer-down-socket:
   ext-passthrough-socket:
+  ext-judged-socket:
   no-ext-socket:

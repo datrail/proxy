@@ -1,7 +1,7 @@
 [project]
 name = "proxy-core"
 version = "0"  # never published; the image is versioned by its git tag
-description = "DatRail Proxy's vendor-neutral core: x-rail ticket lifecycle and injection."
+description = "DatRail Proxy's vendor-neutral core: x-rail ticket lifecycle and injection, and judging requests."
 requires-python = ">=3.12"
 dependencies = [
     "httpx==0.28.1",

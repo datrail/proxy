@@ -31,10 +31,21 @@ and, from the first release that has it, `ghcr.io/datrail/proxy-envoy-grpc`.
 - `e2e/`: a stack in containers per interface, asserting what reaches an upstream
   in each ticket state: held, not found, expired, issuer unreachable and off.
 - `proxy-envoy-grpc`, the proxy as a service Envoy calls on each request
-  (ext_authz, over a unix socket), with an example Envoy config in `e2e/`. It
-  attaches the same `x-rail` headers to protected hosts and leaves the agent's
-  other headers as sent. Its image is `ghcr.io/datrail/proxy-envoy-grpc`, released
-  from the same tags as `ghcr.io/datrail/proxy`.
+  (ext_authz or ext_proc, over a unix socket), with an example Envoy config
+  for each in `e2e/`. It attaches the same `x-rail` headers to protected hosts
+  and leaves the agent's other headers as sent. Its image is
+  `ghcr.io/datrail/proxy-envoy-grpc`, released from the same tags as
+  `ghcr.io/datrail/proxy`.
+- Judging requests, in `proxy-core`, run by `proxy-envoy-grpc` over either
+  callout. A request is judged on its method, URL and headers, and on its
+  body when a rule needs it, read in the mode Envoy is configured with and
+  decoded (`gzip`) and parsed (JSON) under a cap. A refused request gets `403`.
+  Until rules exist every request is allowed. A body that can't be judged
+  (not sent, truncated, too large, malformed…) is refused unless
+  `RAIL_PROXY_ALLOW_UNREADABLE_BODY` names its reason, and a failure while
+  judging is refused unless `RAIL_PROXY_ON_JUDGE_FAILURE=allow`. The bounds are
+  `RAIL_PROXY_MAX_BODY_BYTES`, `RAIL_PROXY_BODY_BUDGET_BYTES` and
+  `RAIL_PROXY_BODY_TIMEOUT_SECONDS`.
 - Container images with an SBOM. A signed build-provenance attestation is
   attached where the repository is public — attestation requires that or
   GitHub Enterprise Cloud — and a release that cannot produce one warns

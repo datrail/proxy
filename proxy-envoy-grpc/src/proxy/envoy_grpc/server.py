@@ -1,31 +1,31 @@
 """The gRPC server Envoy calls on each request, and the process around it.
 
-Envoy's ext_authz filter sends every request it forwards to `Check`, which
-answers with the headers to set and remove. It always answers OK: a request is
-never refused here, only changed.
-
-The same server answers a status method, for a health probe on the same unix
-socket.
+It serves ext_authz's `Check` (`ext_authz.py`) and ext_proc's `Process`
+(`ext_proc.py`), both always: Envoy names only the cluster, and the method
+picks the servicer. The same server answers a status method, for a health
+probe on the same unix socket.
 """
 
 import asyncio
 import json
 import logging
 import signal
-import traceback
 from collections.abc import Mapping
 from pathlib import Path
 
 import grpc
-from envoy.config.core.v3.base_pb2 import HeaderValue, HeaderValueOption
-from envoy.service.auth.v3 import external_auth_pb2, external_auth_pb2_grpc
-from google.rpc import code_pb2, status_pb2
+from envoy.service.auth.v3 import external_auth_pb2_grpc
+from envoy.service.ext_proc.v3 import external_processor_pb2_grpc
 
+from proxy.core.body import get_body_limits, get_body_policy, get_body_timeout
+from proxy.core.judge import AllowAll, Judge, get_judge_failure_verdict
 from proxy.core.lifecycle import build_holder, health_payload, running
 from proxy.core.logs import configure_logging
 from proxy.core.settings import ConfigError, plugin_enabled
-from proxy.core.xrail_auth import TicketHeaders, TicketHolder, outbound_headers
-from proxy.envoy_grpc.decision import Decision, decide
+from proxy.core.xrail_auth import TicketHolder
+from proxy.envoy_grpc.ext_authz import ExtAuthz
+from proxy.envoy_grpc.ext_proc import ExtProc
+from proxy.envoy_grpc.pipeline import Judging, Pipeline
 from proxy.envoy_grpc.settings import (
     ProtectedHost,
     get_protected_hosts,
@@ -42,57 +42,8 @@ STATUS_METHOD = f"/{_STATUS_SERVICE}/Get"
 # How long in-flight checks get to finish once SIGTERM arrives.
 _SHUTDOWN_GRACE_SECONDS = 5.0
 
-
-class _ExtAuthz(external_auth_pb2_grpc.AuthorizationServicer):
-    """Answers Envoy's `Check` with the decision for the request."""
-
-    def __init__(
-        self,
-        holder: TicketHolder | None,
-        protected_hosts: Mapping[str, ProtectedHost],
-    ) -> None:
-        self._holder = holder
-        self._protected_hosts = protected_hosts
-        self._ticket_headers = TicketHeaders(holder)
-
-    async def Check(self, request, context):
-        try:
-            return _ok(self._decide(request))
-        except Exception as exc:  # noqa: BLE001 - every failure is answered OK
-            # Answered OK with no changes, so Envoy forwards the request as it
-            # would if this server were down. Logged with the traceback but not
-            # the exception's message, which could quote a header value.
-            log.error(
-                "could not decide on a request (%s); forwarding it unchanged\n%s",
-                type(exc).__name__,
-                "".join(traceback.format_tb(exc.__traceback__)).rstrip(),
-            )
-            return _ok(Decision())
-
-    def _decide(self, request) -> Decision:
-        http = request.attributes.request.http
-        names = list(http.headers) or [h.key for h in http.header_map.headers]
-        xrail_headers = outbound_headers(self._holder)
-        decision = decide(http.host, names, self._protected_hosts, xrail_headers)
-        if decision.headers:
-            self._ticket_headers.report(http.host, xrail_headers)
-        return decision
-
-
-def _ok(decision: Decision) -> external_auth_pb2.CheckResponse:
-    return external_auth_pb2.CheckResponse(
-        status=status_pb2.Status(code=code_pb2.OK),
-        ok_response=external_auth_pb2.OkHttpResponse(
-            headers=[
-                HeaderValueOption(
-                    header=HeaderValue(key=name, value=value),
-                    append_action=HeaderValueOption.OVERWRITE_IF_EXISTS_OR_ADD,
-                )
-                for name, value in decision.headers.items()
-            ],
-            headers_to_remove=sorted(decision.remove),
-        ),
-    )
+# Room past the body cap for the rest of a message: headers and framing.
+_MESSAGE_HEADROOM_BYTES = 1024 * 1024
 
 
 def _status_handler(holder: TicketHolder | None, enabled: bool):
@@ -119,12 +70,27 @@ async def _start_server(
     enabled: bool,
     protected_hosts: Mapping[str, ProtectedHost],
     socket_path: Path,
+    judging: Judging | None = None,
 ) -> grpc.aio.Server:
     """Build, bind and start the server. Raises `ConfigError` if the socket
-    path can't be used."""
-    server = grpc.aio.server()
+    path can't be used. `judging` is `Judging`'s defaults unless given."""
+    judging = judging or Judging()
+    # A body comes in one message from ext_authz, and from ext_proc's buffered
+    # modes, so a message may be as large as the cap.
+    server = grpc.aio.server(
+        options=[
+            (
+                "grpc.max_receive_message_length",
+                judging.body_limits.max_bytes + _MESSAGE_HEADROOM_BYTES,
+            )
+        ]
+    )
+    pipeline = Pipeline(holder, protected_hosts, judging)
     external_auth_pb2_grpc.add_AuthorizationServicer_to_server(
-        _ExtAuthz(holder, protected_hosts), server
+        ExtAuthz(pipeline), server
+    )
+    external_processor_pb2_grpc.add_ExternalProcessorServicer_to_server(
+        ExtProc(pipeline), server
     )
     server.add_generic_rpc_handlers((_status_handler(holder, enabled),))
     try:
@@ -141,7 +107,7 @@ async def _start_server(
             f"RAIL_PROXY_EXT_SOCKET: cannot use {socket_path}: {exc.strerror}"
         ) from exc
     await server.start()
-    log.info("serving Envoy's checks on %s", socket_path)
+    log.info("serving Envoy's callouts on %s", socket_path)
     return server
 
 
@@ -150,6 +116,7 @@ async def _serve(
     enabled: bool,
     protected_hosts: Mapping[str, ProtectedHost],
     socket_path: Path,
+    judging: Judging,
 ) -> None:
     """Serve until SIGTERM or SIGINT, then stop."""
     stop = asyncio.Event()
@@ -157,7 +124,7 @@ async def _serve(
     for sig in (signal.SIGTERM, signal.SIGINT):
         loop.add_signal_handler(sig, stop.set)
 
-    server = await _start_server(holder, enabled, protected_hosts, socket_path)
+    server = await _start_server(holder, enabled, protected_hosts, socket_path, judging)
     await stop.wait()
     log.info("stopping")
     await server.stop(_SHUTDOWN_GRACE_SECONDS)
@@ -168,27 +135,37 @@ async def _run(
     enabled: bool,
     protected_hosts: Mapping[str, ProtectedHost],
     socket_path: Path,
+    judging: Judging,
 ) -> int:
     # Without waiting for the first fetch: the socket is bound at once, and
     # until the fetch lands every protected request gets
     # `x-rail-status: issuer-unreachable`.
     async with running(holder, wait_for_first_fetch=False):
         try:
-            await _serve(holder, enabled, protected_hosts, socket_path)
+            await _serve(holder, enabled, protected_hosts, socket_path, judging)
         except ConfigError as exc:
             log.error("%s", exc)
             return 2
     return 0
 
 
-def main() -> int:
+def main(judge: Judge | None = None) -> int:
+    """Run until stopped. `judge` is `AllowAll` unless given: the e2e passes
+    its own."""
     configure_logging()
     try:
         enabled = plugin_enabled()
         hosts = get_protected_hosts(plugin_on=enabled)
         holder = build_holder()
         socket_path = get_socket_path()
+        judging = Judging(
+            judge=judge or AllowAll(),
+            on_failure=get_judge_failure_verdict(),
+            body_limits=get_body_limits(),
+            body_policy=get_body_policy(),
+            body_timeout=get_body_timeout(),
+        )
     except ConfigError as exc:
         log.error("%s", exc)
         return 2
-    return asyncio.run(_run(holder, enabled, hosts, socket_path))
+    return asyncio.run(_run(holder, enabled, hosts, socket_path, judging))

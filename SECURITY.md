@@ -11,7 +11,8 @@ It comes in two forms:
   carrying the agent's own headers.
 - **proxy-envoy-grpc** is a service Envoy calls on each of the agent's HTTP
   requests: Envoy forwards the agent's own request, and the service adds the
-  ticket to those for protected hosts.
+  ticket to those for protected hosts. It also judges each request, reading
+  its body when a rule needs it, and refuses one the rules refuse.
 
 Two things are worth attacking here:
 - A call can end up attributed to an agent it did not come from, so the gateway
@@ -53,13 +54,13 @@ quiet.
     servers read `x_rail` as `x-rail`.
   - **proxy-standalone** removes them itself, from every request it sends
     upstream, with the plugin on or off.
-  - In **proxy-envoy-grpc**, the reference Envoy config removes them before
-    calling the service, for every host, and drops every header with `_` in
+  - In **proxy-envoy-grpc**, the reference Envoy configs remove them before
+    calling the service, for every host, and drop every header with `_` in
     its name. For a protected host the service also removes any that remain;
     for any other host it changes nothing, so an Envoy config without that
     removal forwards them.
   - An agent-written `x-rail` header reaching an upstream, through
-    proxy-standalone or through the reference Envoy config, is a report.
+    proxy-standalone or through a reference Envoy config, is a report.
 - **Ticket handling.** A ticket is a bearer credential for its lifetime. It must
   not reach a log, an error message, a crash dump, or any host other than the
   upstream it was attached for. It is logged as a digest prefix and never as a
@@ -91,7 +92,16 @@ quiet.
   and group, and the service has no TCP port, since anything on localhost in
   a pod is reachable by the agent. Envoy reaches it by sharing that group; do
   not put the agent in it.
-- **Envoy's access log.** The reference Envoy config logs no request header,
+- **Request bodies.** proxy-envoy-grpc reads a request's body only when a
+  rule needs it, and only as much as Envoy is configured to send. It reads at
+  most `RAIL_PROXY_MAX_BODY_BYTES` of one body and
+  `RAIL_PROXY_BODY_BUDGET_BYTES` of all of them at once, counting each until
+  the thread judging it ends; decoding and parsing a body make copies on top.
+  It decodes no further than the cap, so a decompression bomb stops there,
+  and answers within `RAIL_PROXY_BODY_TIMEOUT_SECONDS`. It never logs a body or any part of one:
+  a refusal is logged with a reason, or the host. A body reaching a log, or a
+  body that makes the service read or decode past those bounds, is a report.
+- **Envoy's access log.** The reference Envoy configs log no request header,
   so never `x-rail`. A deployment that adds request headers to its access log
   format must leave `x-rail` out.
 
