@@ -126,7 +126,16 @@ def test_an_unprotected_request_is_left_alone(monkeypatch, target):
 
 
 def test_only_x_rail_headers_are_removed_whatever_their_case(monkeypatch):
-    agent = ["Content-Type", "Authorization", ":path", "X-Rail", "X-Rail-Foo"]
+    """A header merely starting with `x-rail` is not an x-rail header."""
+    agent = [
+        "Content-Type",
+        "Authorization",
+        ":path",
+        "X-Rail",
+        "X-Rail-Foo",
+        "x-railway-id",
+        "x-rails",
+    ]
 
     decision = decide(
         "mcp.example.com",
@@ -136,17 +145,6 @@ def test_only_x_rail_headers_are_removed_whatever_their_case(monkeypatch):
     )
 
     assert decision.remove == {"x-rail", "x-rail-foo"}
-
-
-def test_a_header_merely_starting_with_x_rail_is_not_an_x_rail_header(monkeypatch):
-    decision = decide(
-        "mcp.example.com",
-        ["x-railway-id", "x-rails"],
-        _protected_hosts(monkeypatch, "mcp.example.com"),
-        OutboundHeaders(),
-    )
-
-    assert decision.remove == frozenset()
 
 
 def test_a_header_that_is_set_is_never_also_removed(monkeypatch):

@@ -138,33 +138,27 @@ def test_the_plugin_off_reads_the_list_and_accepts_none(monkeypatch):
 
 
 @pytest.mark.parametrize(
-    ("entry", "warned"),
+    ("entry", "plugin_on", "warned"),
     [
-        ("http://gw.internal", True),
-        ("http://gw.internal:8080", True),
-        ("mcp.example.com", False),
-        ("https://mcp.example.com", False),
-        ("http://127.0.0.1:8080", False),
-        ("http://[::1]", False),
+        ("http://gw.internal", True, True),
+        ("http://gw.internal:8080", True, True),
+        ("mcp.example.com", True, False),
+        ("https://mcp.example.com", True, False),
+        ("http://127.0.0.1:8080", True, False),
+        ("http://[::1]", True, False),
+        ("http://gw.internal", False, False),
     ],
 )
 def test_a_plaintext_entry_is_warned_about_with_the_plugin_on(
-    monkeypatch, caplog, entry, warned
+    monkeypatch, caplog, entry, plugin_on, warned
 ):
     """A bare host is upgraded to HTTPS, and loopback traffic never leaves the
-    machine, so neither is warned about."""
+    machine, so neither is warned about; nor is anything with the plugin off."""
     with caplog.at_level("WARNING"):
-        _hosts(monkeypatch, entry)
+        _hosts(monkeypatch, entry, plugin_on=plugin_on)
 
     plaintext = [r for r in caplog.records if "plaintext http" in r.getMessage()]
     assert bool(plaintext) is warned
-
-
-def test_no_plaintext_warning_with_the_plugin_off(monkeypatch, caplog):
-    with caplog.at_level("WARNING"):
-        _hosts(monkeypatch, "http://gw.internal", plugin_on=False)
-
-    assert not caplog.records
 
 
 @pytest.mark.parametrize(
