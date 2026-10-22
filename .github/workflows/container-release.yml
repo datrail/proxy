@@ -8,7 +8,9 @@ name: Release Container Images
 
 on:
   push:
-    tags: ["v*"]
+    # Narrower than `v*`, which also matches `v1` and `vfoo`; `version` is the
+    # real check, since a filter can't anchor the end and still allow suffixes.
+    tags: ["v[0-9]+.[0-9]+.[0-9]+*"]
   workflow_dispatch:
     inputs:
       tag:
@@ -42,9 +44,8 @@ jobs:
       tag: ${{ steps.resolve.outputs.tag }}
       latest: ${{ steps.resolve.outputs.latest }}
     steps:
-      # Refuse anything but vMAJOR.MINOR.PATCH: the `v*` glob also matches `v1`
-      # and `vfoo`, and a manual run would otherwise tag the branch it was
-      # launched from, moving `latest` either way.
+      # Refuse anything but vMAJOR.MINOR.PATCH: a manual run would otherwise tag
+      # the branch it was launched from, moving `latest` either way.
       - id: resolve
         env:
           RAW_REF: ${{ github.event.inputs.tag || github.ref_name }}
@@ -132,9 +133,8 @@ jobs:
           # Off: the signed attestation below replaces buildx's unsigned provenance.
           provenance: false
           # Shared with ci.yml's e2e job, so a release reuses its amd64 layers:
-          # keep the scope names in step. Not `github.workflow`, which is
-          # `CI` when ci.yml runs on master, so a release would never see
-          # those caches.
+          # keep the scope names in step. Not `github.workflow`, which is `CI`
+          # when ci.yml runs on master, so a release would never see those caches.
           cache-from: type=gha,scope=image-${{ matrix.stack }}
           cache-to: type=gha,mode=max,scope=image-${{ matrix.stack }}
 
