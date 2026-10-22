@@ -1,7 +1,8 @@
 """Whether a request may go out, judged from what it carries.
 
-A judge answers once the headers are in: allow, deny, or needs the body. Its
-rules are the judge's own; until they exist, `AllowAll` is the judge.
+A judge answers once the headers are in: allow, deny, or needs the body; and
+when it needs the body, again once the body is read. Its rules are the
+judge's own; until they exist, `AllowAll` is the judge.
 
 What happens when judging fails, before any verdict, is a setting:
 `RAIL_PROXY_ON_JUDGE_FAILURE`, `deny` by default.
@@ -43,11 +44,19 @@ class Judge(Protocol):
         which the caller answers as `get_judge_failure_verdict` says."""
         ...
 
+    def judge_body(self, request: Request, body: bytes) -> Allow | Deny:
+        """The verdict once the body is read, after `judge_headers` needed
+        it. `body` is empty for a request without one."""
+        ...
+
 
 class AllowAll:
     """The judge until rules exist: allows everything, never reads a body."""
 
     def judge_headers(self, request: Request) -> Allow:
+        return Allow()
+
+    def judge_body(self, request: Request, body: bytes) -> Allow:
         return Allow()
 
 

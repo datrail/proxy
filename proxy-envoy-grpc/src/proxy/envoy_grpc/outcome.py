@@ -1,7 +1,8 @@
 """What the extension answers for one request, whichever callout asked.
 
-Each adapter hands a request to the server's one `Pipeline`, which judges and
-decides it, and turns the `Outcome` into its protocol's answer.
+Each adapter has the server's one `Pipeline` judge a request, from its headers
+and, when the judge needs it, its body, then decide on it; and turns the
+`Outcome` into its protocol's answer.
 """
 
 import logging
@@ -9,7 +10,8 @@ import traceback
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
 
-from proxy.core.judge import Allow, Deny, Judge, NeedsBody
+from proxy.core.body import BodyBudget, BodyLimits, BodyPolicy, BodyQuota, Reason
+from proxy.core.judge import Allow, AllowAll, Deny, Judge, NeedsBody
 from proxy.core.request import Request
 from proxy.core.xrail_auth import TicketHeaders, TicketHolder, outbound_headers
 from proxy.envoy_grpc.decision import Decision, decide
@@ -27,36 +29,94 @@ class Outcome:
     decision: Decision = field(default_factory=Decision)
 
 
+@dataclass(frozen=True)
+class Judging:
+    """How requests are judged: the judge, the verdict when judging fails,
+    and the bounds on the bodies read."""
+
+    judge: Judge = field(default_factory=AllowAll)
+    on_failure: Allow | Deny = field(default_factory=Deny)
+    body_limits: BodyLimits = field(default_factory=BodyLimits)
+
+
 class Pipeline:
     """Judges and decides every request, for every adapter. One per server,
-    so the log line about the ticket is the same whichever callout asked."""
+    so the log line about the ticket, and the body budget, are the same
+    whichever callout asked.
+
+    A failure while judging, building the request or reading the body
+    included, gets `judging.on_failure`, so a request that breaks the adapter is
+    never forwarded unjudged unless the setting says so. A failure while
+    deciding forwards the request unchanged, as if this extension were down.
+    """
 
     def __init__(
         self,
         holder: TicketHolder | None,
         protected_hosts: Mapping[str, ProtectedHost],
-        judge: Judge,
-        on_judge_failure: Allow | Deny,
+        judging: Judging,
     ) -> None:
         self._holder = holder
         self._protected_hosts = protected_hosts
         self._ticket_headers = TicketHeaders(holder)
-        self._judge = judge
-        self._on_judge_failure = on_judge_failure
+        self._judge = judging.judge
+        self._on_judge_failure = judging.on_failure
+        self._budget = BodyBudget(judging.body_limits)
+        self._policy = BodyPolicy()
+
+    def judge_headers(
+        self, build_request: Callable[[], Request]
+    ) -> tuple[Request | None, Allow | Deny | NeedsBody]:
+        """The request, and the judge's verdict on it. The request is None
+        when it couldn't be built, and the verdict is then never
+        `NeedsBody`."""
+        try:
+            request = build_request()
+            return request, self._judge.judge_headers(request)
+        except Exception as exc:  # noqa: BLE001 - answered as the setting says
+            return None, self.get_failure_verdict(exc)
+
+    def open_quota(self) -> BodyQuota:
+        """A quota for one request's body, under the process-wide budget."""
+        return self._budget.open_quota()
+
+    def judge_body(
+        self, request: Request, read: Callable[[], bytes | Reason]
+    ) -> Allow | Deny:
+        """The verdict once `read` has the body, or the policy's for the
+        reason it can't."""
+        try:
+            body = read()
+            if isinstance(body, Reason):
+                verdict = self._policy.get_verdict(body)
+                log.warning(
+                    "cannot judge a request's body (%s); %s",
+                    body,
+                    _describe(verdict),
+                )
+                return verdict
+            return self._judge.judge_body(request, body)
+        except Exception as exc:  # noqa: BLE001 - answered as the setting says
+            return self.get_failure_verdict(exc)
+
+    def get_failure_verdict(self, exc: Exception) -> Allow | Deny:
+        """Log a failure while judging, and give the verdict for it."""
+        log_failure("could not judge a request", exc, _describe(self._on_judge_failure))
+        return self._on_judge_failure
 
     def get_outcome(
-        self,
-        build_request: Callable[[], Request],
-        target: str,
-        header_names: Iterable[str],
+        self, verdict: Allow | Deny, target: str, header_names: Iterable[str]
     ) -> Outcome:
-        """`target` and `header_names` are what `decide` reads: the request's
-        `:authority`, and the names of every header the agent sent."""
-        return get_outcome(
-            lambda: self._judge.judge_headers(build_request()),
-            lambda: self._decide(target, header_names),
-            self._on_judge_failure,
-        )
+        """Decide on what the judge allows. `target` and `header_names` are
+        what `decide` reads: the request's `:authority`, and the names of
+        every header the agent sent."""
+        if isinstance(verdict, Deny):
+            return Outcome(verdict)
+        try:
+            return Outcome(verdict, self._decide(target, header_names))
+        except Exception as exc:  # noqa: BLE001 - every failure is answered OK
+            log_failure("could not decide on a request", exc, "forwarding it unchanged")
+            return Outcome(verdict)
 
     def _decide(self, target: str, header_names: Iterable[str]) -> Decision:
         xrail_headers = outbound_headers(self._holder)
@@ -66,37 +126,8 @@ class Pipeline:
         return decision
 
 
-def get_outcome(
-    judge: Callable[[], Allow | Deny | NeedsBody],
-    decide: Callable[[], Decision],
-    on_judge_failure: Allow | Deny,
-) -> Outcome:
-    """Judge, then decide on what the judge allows.
-
-    A failure while judging, building the request included, gets
-    `on_judge_failure`, so a request that breaks the adapter is never forwarded
-    unjudged unless the setting says so. A failure while deciding forwards the
-    request unchanged, as if this extension were down.
-    """
-    refused = isinstance(on_judge_failure, Deny)
-    on_failure = "refusing it" if refused else "forwarding it unjudged"
-    try:
-        verdict = judge()
-    except Exception as exc:  # noqa: BLE001 - answered as the setting says
-        log_failure("could not judge a request", exc, on_failure)
-        verdict = on_judge_failure
-    if isinstance(verdict, NeedsBody):
-        # Nothing reads a body yet.
-        log.error("the judge needs the body, which is not read; %s", on_failure)
-        verdict = on_judge_failure
-
-    if isinstance(verdict, Deny):
-        return Outcome(verdict)
-    try:
-        return Outcome(verdict, decide())
-    except Exception as exc:  # noqa: BLE001 - every failure is answered OK
-        log_failure("could not decide on a request", exc, "forwarding it unchanged")
-        return Outcome(verdict)
+def _describe(verdict: Allow | Deny) -> str:
+    return "refusing it" if isinstance(verdict, Deny) else "forwarding it unjudged"
 
 
 def log_failure(what: str, exc: Exception, action: str) -> None:

@@ -17,20 +17,15 @@ import grpc
 from envoy.service.auth.v3 import external_auth_pb2_grpc
 from envoy.service.ext_proc.v3 import external_processor_pb2_grpc
 
-from proxy.core.judge import (
-    Allow,
-    AllowAll,
-    Deny,
-    Judge,
-    get_judge_failure_verdict,
-)
+from proxy.core.body import get_body_limits
+from proxy.core.judge import get_judge_failure_verdict
 from proxy.core.lifecycle import build_holder, health_payload, running
 from proxy.core.logs import configure_logging
 from proxy.core.settings import ConfigError, plugin_enabled
 from proxy.core.xrail_auth import TicketHolder
 from proxy.envoy_grpc.ext_authz import ExtAuthz
 from proxy.envoy_grpc.ext_proc import ExtProc
-from proxy.envoy_grpc.outcome import Pipeline
+from proxy.envoy_grpc.outcome import Judging, Pipeline
 from proxy.envoy_grpc.settings import (
     ProtectedHost,
     get_protected_hosts,
@@ -46,6 +41,9 @@ STATUS_METHOD = f"/{_STATUS_SERVICE}/Get"
 
 # How long in-flight checks get to finish once SIGTERM arrives.
 _SHUTDOWN_GRACE_SECONDS = 5.0
+
+# Room past the body cap for the rest of a message: headers and framing.
+_MESSAGE_HEADROOM_BYTES = 1024 * 1024
 
 
 def _status_handler(holder: TicketHolder | None, enabled: bool):
@@ -72,20 +70,22 @@ async def _start_server(
     enabled: bool,
     protected_hosts: Mapping[str, ProtectedHost],
     socket_path: Path,
-    *,
-    judge: Judge | None = None,
-    on_judge_failure: Allow | Deny | None = None,
+    judging: Judging | None = None,
 ) -> grpc.aio.Server:
     """Build, bind and start the server. Raises `ConfigError` if the socket
-    path can't be used. The judge is `AllowAll` and a judge failure is denied
-    unless given."""
-    server = grpc.aio.server()
-    pipeline = Pipeline(
-        holder,
-        protected_hosts,
-        judge or AllowAll(),
-        on_judge_failure or Deny(),
+    path can't be used. `judging` is `Judging`'s defaults unless given."""
+    judging = judging or Judging()
+    # A body comes in one message from ext_authz, and from ext_proc's buffered
+    # modes, so a message may be as large as the cap.
+    server = grpc.aio.server(
+        options=[
+            (
+                "grpc.max_receive_message_length",
+                judging.body_limits.max_bytes + _MESSAGE_HEADROOM_BYTES,
+            )
+        ]
     )
+    pipeline = Pipeline(holder, protected_hosts, judging)
     external_auth_pb2_grpc.add_AuthorizationServicer_to_server(
         ExtAuthz(pipeline), server
     )
@@ -116,7 +116,7 @@ async def _serve(
     enabled: bool,
     protected_hosts: Mapping[str, ProtectedHost],
     socket_path: Path,
-    on_judge_failure: Allow | Deny,
+    judging: Judging,
 ) -> None:
     """Serve until SIGTERM or SIGINT, then stop."""
     stop = asyncio.Event()
@@ -124,13 +124,7 @@ async def _serve(
     for sig in (signal.SIGTERM, signal.SIGINT):
         loop.add_signal_handler(sig, stop.set)
 
-    server = await _start_server(
-        holder,
-        enabled,
-        protected_hosts,
-        socket_path,
-        on_judge_failure=on_judge_failure,
-    )
+    server = await _start_server(holder, enabled, protected_hosts, socket_path, judging)
     await stop.wait()
     log.info("stopping")
     await server.stop(_SHUTDOWN_GRACE_SECONDS)
@@ -141,16 +135,14 @@ async def _run(
     enabled: bool,
     protected_hosts: Mapping[str, ProtectedHost],
     socket_path: Path,
-    on_judge_failure: Allow | Deny,
+    judging: Judging,
 ) -> int:
     # Without waiting for the first fetch: the socket is bound at once, and
     # until the fetch lands every protected request gets
     # `x-rail-status: issuer-unreachable`.
     async with running(holder, wait_for_first_fetch=False):
         try:
-            await _serve(
-                holder, enabled, protected_hosts, socket_path, on_judge_failure
-            )
+            await _serve(holder, enabled, protected_hosts, socket_path, judging)
         except ConfigError as exc:
             log.error("%s", exc)
             return 2
@@ -164,8 +156,10 @@ def main() -> int:
         hosts = get_protected_hosts(plugin_on=enabled)
         holder = build_holder()
         socket_path = get_socket_path()
-        on_judge_failure = get_judge_failure_verdict()
+        judging = Judging(
+            on_failure=get_judge_failure_verdict(), body_limits=get_body_limits()
+        )
     except ConfigError as exc:
         log.error("%s", exc)
         return 2
-    return asyncio.run(_run(holder, enabled, hosts, socket_path, on_judge_failure))
+    return asyncio.run(_run(holder, enabled, hosts, socket_path, judging))

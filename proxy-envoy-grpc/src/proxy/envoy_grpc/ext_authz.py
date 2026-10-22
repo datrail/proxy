@@ -1,21 +1,33 @@
 """The ext_authz adapter: Envoy's `Check`, answered for one request.
 
-Envoy's ext_authz filter sends every request it forwards to `Check`. The
-answer is OK with the headers to set and remove, or `403` when the request is
-refused.
+Envoy's ext_authz filter sends every request it forwards to `Check`, with
+its body when configured to (`with_request_body`). The answer is OK with the
+headers to set and remove, or `403` when the request is refused.
 """
+
+import logging
 
 from envoy.config.core.v3.base_pb2 import HeaderValue, HeaderValueOption
 from envoy.service.auth.v3 import external_auth_pb2, external_auth_pb2_grpc
 from envoy.type.v3 import http_status_pb2
 from google.rpc import code_pb2, status_pb2
 
-from proxy.core.judge import DENIED_BODY, DENIED_CONTENT_TYPE, DENIED_STATUS, Deny
+from proxy.core.body import BodyQuota, Reason
+from proxy.core.judge import (
+    DENIED_BODY,
+    DENIED_CONTENT_TYPE,
+    DENIED_STATUS,
+    Deny,
+    NeedsBody,
+)
 from proxy.core.request import Request, build_request
 from proxy.envoy_grpc.decision import Decision
 from proxy.envoy_grpc.outcome import Outcome, Pipeline
 
+log = logging.getLogger(__name__)
+
 # Added by Envoy when it sends the body: how it came, not what the agent sent.
+# `true` when truncated, `false` when whole, absent when no body was sent.
 _PARTIAL_BODY_HEADER = "x-envoy-auth-partial-body"
 
 
@@ -24,14 +36,42 @@ class ExtAuthz(external_auth_pb2_grpc.AuthorizationServicer):
 
     def __init__(self, pipeline: Pipeline) -> None:
         self._pipeline = pipeline
+        self._warned_unpacked = False
 
     async def Check(self, request, context):
         http = request.attributes.request.http
         names = list(http.headers) or [h.key for h in http.header_map.headers]
-        outcome = self._pipeline.get_outcome(
-            lambda: _build_request(http), http.host, names
-        )
-        return _answer(outcome)
+        built, verdict = self._pipeline.judge_headers(lambda: _build_request(http))
+        if isinstance(verdict, NeedsBody):
+            with self._pipeline.open_quota() as quota:
+                verdict = self._pipeline.judge_body(
+                    built, lambda: self._read_body(http, quota)
+                )
+        return _answer(self._pipeline.get_outcome(verdict, http.host, names))
+
+    def _read_body(self, http, quota: BodyQuota) -> bytes | Reason:
+        if http.body:
+            # Without `pack_as_bytes`, Envoy replaces every byte that isn't
+            # UTF-8 with `!`, so the body may not be the agent's.
+            if not self._warned_unpacked:
+                self._warned_unpacked = True
+                log.warning(
+                    "Envoy sent a request body as a string, which may have "
+                    "changed it; set pack_as_bytes in ext_authz's "
+                    "with_request_body. Judged as not sent."
+                )
+            return Reason.NOT_SENT
+        headers = dict(_get_headers(http))
+        partial = headers.get(_PARTIAL_BODY_HEADER)
+        if partial == "true":
+            return Reason.TRUNCATED
+        if partial is None:
+            # No body, or one Envoy wasn't configured to send. Only a length
+            # tells them apart: Envoy drops `transfer-encoding` from the check.
+            if int(headers.get("content-length") or 0) > 0:
+                return Reason.NOT_SENT
+            return b""
+        return quota.take(len(http.raw_body)) or http.raw_body
 
 
 def _build_request(http) -> Request:

@@ -3,7 +3,18 @@
 Envoy's ext_proc filter opens one stream per request and sends its parts as
 they come, each waiting for an answer. The request's headers are judged and
 decided on; the answer sets and removes headers, or refuses the request with
-`403`. Every other part is answered unchanged, so a stream never stalls.
+`403`. When the judge needs the body, it is read in the body mode Envoy is
+configured with, which the first message names:
+
+- `BUFFERED`, `BUFFERED_PARTIAL`, and `STREAMED` without
+  `send_body_without_waiting_for_header_response`: the headers are answered at
+  once, and the body's parts held until the verdict. A deny then comes after
+  the headers were answered.
+- `STREAMED` with it, and `FULL_DUPLEX_STREAMED`: the headers' answer is held
+  too, so nothing goes upstream before the verdict.
+- `NONE`: no body will come, so it is judged as not sent.
+
+Every other part is answered unchanged, so a stream never stalls.
 """
 
 from envoy.config.core.v3.base_pb2 import HeaderValue, HeaderValueOption
@@ -16,11 +27,22 @@ from envoy.service.ext_proc.v3 import (
 )
 from envoy.type.v3 import http_status_pb2
 
-from proxy.core.judge import DENIED_BODY, DENIED_CONTENT_TYPE, DENIED_STATUS, Deny
+from proxy.core.body import BodyQuota, Reason
+from proxy.core.judge import (
+    DENIED_BODY,
+    DENIED_CONTENT_TYPE,
+    DENIED_STATUS,
+    Allow,
+    Deny,
+    NeedsBody,
+)
 from proxy.core.request import Request, build_request
 from proxy.envoy_grpc.outcome import Outcome, Pipeline, log_failure
 
-_FULL_DUPLEX = ProcessingMode.BodySendMode.FULL_DUPLEX_STREAMED
+_Mode = ProcessingMode.BodySendMode
+_FULL_DUPLEX = _Mode.FULL_DUPLEX_STREAMED
+# The body modes that send the extension the body.
+_READABLE = {_Mode.BUFFERED, _Mode.BUFFERED_PARTIAL, _Mode.STREAMED, _FULL_DUPLEX}
 
 # The answer to each part of the stream, by its field in `ProcessingRequest`.
 _RESPONSE_TYPES = {
@@ -40,39 +62,142 @@ class ExtProc(external_processor_pb2_grpc.ExternalProcessorServicer):
         self._pipeline = pipeline
 
     async def Process(self, request_iterator, context):
+        stream = _Stream(self._pipeline)
+        try:
+            async for message in request_iterator:
+                part = message.WhichOneof("request")
+                if part not in _RESPONSE_TYPES:
+                    continue
+                for response in stream.answer(message, part):
+                    yield response
+                if stream.ended:
+                    return
+        finally:
+            stream.close()
+
+
+class _Stream:
+    """One request's stream: what was configured, and the body parts held
+    while the judge waits for the body."""
+
+    def __init__(self, pipeline: Pipeline) -> None:
+        self._pipeline = pipeline
+        self._mode = _Mode.NONE
+        self._holds_headers = False
         # The body parts Envoy forwards only as they're sent back.
-        echoed: set[str] = set()
-        async for message in request_iterator:
-            part = message.WhichOneof("request")
-            if part not in _RESPONSE_TYPES:
-                continue
-            if message.HasField("protocol_config"):
-                echoed = _get_echoed_parts(message.protocol_config)
-            try:
-                if part == "request_headers":
-                    response = self._answer_headers(message.request_headers)
-                else:
-                    response = _continue(message, part, echoed)
-            except Exception as exc:  # noqa: BLE001 - every failure is continued
-                # Past the verdict, so as if this extension were down.
-                log_failure(
-                    f"could not answer Envoy's {part}", exc, "continuing it unchanged"
-                )
-                response = _continue(message, part, echoed)
-            yield response
-            if response.HasField("immediate_response"):
-                return
+        self._echoed: set[str] = set()
+        self._target = ""
+        self._names: list[str] = []
+        # Set while the judge waits for the body.
+        self._request: Request | None = None
+        self._quota: BodyQuota | None = None
+        self._held: list[tuple[object, str]] = []
+        self.ended = False
+
+    def answer(
+        self, message, part: str
+    ) -> list[external_processor_pb2.ProcessingResponse]:
+        """The responses `message` releases: none while it's held, several
+        when it releases what was held."""
+        if message.HasField("protocol_config"):
+            self._read_config(message.protocol_config)
+        waiting = self._quota is not None
+        try:
+            if part == "request_headers":
+                return self._answer_headers(message.request_headers)
+            if waiting and part in ("request_body", "request_trailers"):
+                return self._read(message, part)
+            return [_continue(message, part, self._echoed)]
+        except Exception as exc:  # noqa: BLE001 - before the verdict, or after
+            if waiting:
+                if not self._held or self._held[-1][0] is not message:
+                    self._held.append((message, part))
+                return self._release(self._pipeline.get_failure_verdict(exc))
+            # Past the verdict, so as if this extension were down.
+            log_failure(
+                f"could not answer Envoy's {part}", exc, "continuing it unchanged"
+            )
+            return [_continue(message, part, self._echoed)]
+
+    def close(self) -> None:
+        if self._quota is not None:
+            self._quota.close()
+            self._quota = None
+
+    def _read_config(self, protocol_config) -> None:
+        self._mode = protocol_config.request_body_mode
+        self._holds_headers = self._mode == _FULL_DUPLEX or (
+            self._mode == _Mode.STREAMED
+            and protocol_config.send_body_without_waiting_for_header_response
+        )
+        self._echoed = _get_echoed_parts(protocol_config)
 
     def _answer_headers(
         self, http_headers
-    ) -> external_processor_pb2.ProcessingResponse:
+    ) -> list[external_processor_pb2.ProcessingResponse]:
         headers = _get_headers(http_headers)
-        outcome = self._pipeline.get_outcome(
-            lambda: _build_request(headers),
-            _get_pseudo_header(headers, ":authority"),
-            [name for name, _ in headers],
+        self._target = _get_pseudo_header(headers, ":authority")
+        self._names = [name for name, _ in headers]
+        request, verdict = self._pipeline.judge_headers(lambda: _build_request(headers))
+        if isinstance(verdict, NeedsBody):
+            if http_headers.end_of_stream:
+                verdict = self._pipeline.judge_body(request, lambda: b"")
+            elif self._mode not in _READABLE:
+                verdict = self._pipeline.judge_body(request, lambda: Reason.NOT_SENT)
+            else:
+                self._request = request
+                self._quota = self._pipeline.open_quota()
+                if self._holds_headers:
+                    return []
+                # Envoy holds the body until its parts are answered.
+                return [self._answer_verdict(Allow())]
+        return [self._answer_verdict(verdict)]
+
+    def _read(
+        self, message, part: str
+    ) -> list[external_processor_pb2.ProcessingResponse]:
+        self._held.append((message, part))
+        if part == "request_body":
+            body = message.request_body
+            reason = self._quota.take(len(body.body))
+            # Envoy sends this mode's body in one part, which doesn't end the
+            # stream when it was cut short.
+            partial = self._mode == _Mode.BUFFERED_PARTIAL
+            if reason is None and partial and not body.end_of_stream:
+                reason = Reason.TRUNCATED
+            if reason is not None:
+                return self._release(
+                    self._pipeline.judge_body(self._request, lambda: reason)
+                )
+            if not body.end_of_stream:
+                return []
+        # The body ended: on its last part, or with the trailers.
+        data = b"".join(
+            m.request_body.body for m, p in self._held if p == "request_body"
         )
-        return _answer(outcome)
+        return self._release(self._pipeline.judge_body(self._request, lambda: data))
+
+    def _release(
+        self, verdict: Allow | Deny
+    ) -> list[external_processor_pb2.ProcessingResponse]:
+        """Answer what was held, now that the verdict is in."""
+        self.close()
+        held, self._held = self._held, []
+        if isinstance(verdict, Deny):
+            self.ended = True
+            return [_denied()]
+        responses = [self._answer_verdict(verdict)] if self._holds_headers else []
+        return responses + [_continue(m, p, self._echoed) for m, p in held]
+
+    def _answer_verdict(
+        self, verdict: Allow | Deny
+    ) -> external_processor_pb2.ProcessingResponse:
+        response = _answer(
+            self._pipeline.get_outcome(verdict, self._target, self._names)
+        )
+        if response.HasField("immediate_response"):
+            self.ended = True
+        return response
 
 
 def _get_echoed_parts(protocol_config) -> set[str]:
