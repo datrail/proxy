@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://raw.githubusercontent.com/datrail/proxy/master/spec/ticket-fetch.schema.json",
+  "$id": "https://raw.githubusercontent.com/datrail/proxy/master/schemas/ticket-fetch.schema.json",
   "title": "Rail Center host ticket fetch",
   "description": "Response to GET /v1/tickets?host_id=&sandbox_name=. The list is the complete answer for that host and sandbox: an empty one means no ticket exists.",
   "type": "object",

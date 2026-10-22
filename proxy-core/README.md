@@ -11,9 +11,9 @@ and health. It imports no other member of this workspace; every interface,
 ## The ticket
 
 - `TicketSource` fetches a ticket for one host and sandbox. The response shape
-  is [`spec/ticket-fetch.schema.json`](../spec/ticket-fetch.schema.json), and
-  [`tests/fixtures/tickets.json`](tests/fixtures/tickets.json) is the instance
-  the suite validates against it.
+  is [`schemas/ticket-fetch.schema.json`](../schemas/ticket-fetch.schema.json),
+  and [`tests/fixtures/tickets.json`](tests/fixtures/tickets.json) is the
+  instance the suite validates against it.
 - `TicketHolder` keeps a valid one to hand, refreshing it in the background.
 - `outbound_headers` decides what a request gets: `x-rail`, `x-rail-status`,
   or neither when the plugin is off. `TicketHeaders` adds the log line: a

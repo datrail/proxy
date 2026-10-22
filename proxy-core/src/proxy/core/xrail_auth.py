@@ -9,7 +9,7 @@ nothing here looks. Expiry therefore comes from `expires_at` alone, and an entry
 without one is rejected rather than stored as never expiring — with nothing else
 to read, "no expiry" would mean "valid for ever".
 
-The wire contract is pinned in `spec/ticket-fetch.schema.json`, and
+The wire contract is pinned in `schemas/ticket-fetch.schema.json`, and
 `proxy-core/tests/fixtures/tickets.json` is the instance the suite validates against it.
 
 `redact_credentials` lives here too, because what it recognises is a credential

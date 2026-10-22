@@ -26,7 +26,8 @@ and, from the first release that has it, `ghcr.io/datrail/proxy-envoy-grpc`.
   an unreadable major refuses to start.
 - `GET /health`, reporting whether the plugin is on and what is held — a
   fingerprint and an expiry, never the ticket and never the issuer's address.
-- `spec/ticket-fetch.schema.json`, pinning the fetch response this proxy parses.
+- `schemas/ticket-fetch.schema.json`, pinning the fetch response this proxy
+  parses.
 - `e2e/`: a stack in containers per interface, asserting what reaches an upstream
   in each ticket state: held, not found, expired, issuer unreachable and off.
 - `proxy-envoy-grpc`, the proxy as a service Envoy calls on each request
