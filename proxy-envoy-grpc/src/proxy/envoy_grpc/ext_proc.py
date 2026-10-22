@@ -44,6 +44,7 @@ from proxy.core.judge import (
     NeedsBody,
 )
 from proxy.core.request import Request, build_request
+from proxy.envoy_grpc.headers import read_header_map
 from proxy.envoy_grpc.pipeline import Outcome, Pipeline, log_failure
 
 _Mode = ProcessingMode.BodySendMode
@@ -143,7 +144,7 @@ class _Stream:
     ) -> list[external_processor_pb2.ProcessingResponse]:
         def build() -> Request:
             # Read while building the request, so a failure there is judged.
-            headers = _get_headers(http_headers)
+            headers = read_header_map(http_headers.headers)
             self._target = _get_pseudo_header(headers, ":authority")
             self._names = [name for name, _ in headers]
             return _build_request(headers)
@@ -221,13 +222,6 @@ def _get_echoed_parts(protocol_config) -> set[str]:
         "response_body": protocol_config.response_body_mode,
     }
     return {part for part, mode in modes.items() if mode == _FULL_DUPLEX}
-
-
-def _get_headers(http_headers) -> list[tuple[str, str]]:
-    return [
-        (h.key, h.raw_value.decode("latin-1") if h.raw_value else h.value)
-        for h in http_headers.headers.headers
-    ]
 
 
 def _get_pseudo_header(headers: list[tuple[str, str]], name: str) -> str:

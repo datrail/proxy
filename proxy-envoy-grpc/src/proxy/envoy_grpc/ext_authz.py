@@ -22,6 +22,7 @@ from proxy.core.judge import (
 )
 from proxy.core.request import Request, build_request
 from proxy.envoy_grpc.decision import Decision
+from proxy.envoy_grpc.headers import read_header_map
 from proxy.envoy_grpc.pipeline import Outcome, Pipeline
 
 log = logging.getLogger(__name__)
@@ -102,10 +103,7 @@ def _get_headers(http) -> list[tuple[str, str]]:
     (`encode_raw_headers`)."""
     if http.headers:
         return list(http.headers.items())
-    return [
-        (h.key, h.raw_value.decode("latin-1") if h.raw_value else h.value)
-        for h in http.header_map.headers
-    ]
+    return read_header_map(http.header_map)
 
 
 def _answer(outcome: Outcome) -> external_auth_pb2.CheckResponse:
