@@ -26,7 +26,7 @@ jobs:
     # Named, not ubuntu-latest: that label moves to 26.04 from 2026-10-19 to
     # 11-19, run by run (actions/runner-images#14748). Move on purpose (DR-133).
     runs-on: ubuntu-26.04
-    timeout-minutes: 5
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
         with:
@@ -44,7 +44,8 @@ jobs:
 
   test:
     runs-on: ubuntu-26.04
-    timeout-minutes: 5
+    # Each test already times out at 30s; this bounds everything around them.
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
         with:
@@ -60,9 +61,10 @@ jobs:
 
   # Builds and runs each image against stubs, which the unit suite, running
   # in-process, can't: the container starts, binds and completes a handshake.
+  # amd64 only: emulating the release's arm64 would add nothing here.
   e2e:
     runs-on: ubuntu-26.04
-    timeout-minutes: 10
+    timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
