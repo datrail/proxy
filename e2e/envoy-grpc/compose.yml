@@ -1,6 +1,6 @@
 # The Envoy extension's e2e stack; e2e/README.md says what each service is for.
 #
-#   docker compose -f e2e/envoy-grpc/compose.yml up --build --abort-on-container-exit --exit-code-from driver
+#   docker compose -f e2e/envoy-grpc/compose.yml up --build --force-recreate --abort-on-container-exit --exit-code-from driver
 #
 # The result is the driver container's exit code.
 

@@ -1,4 +1,4 @@
-.PHONY: init fmt lint test e2e e2e-standalone e2e-envoy-grpc
+.PHONY: init fmt lint test e2e e2e-standalone e2e-envoy-grpc e2e-down
 
 # CI runs these same targets.
 
@@ -20,13 +20,20 @@ test:
 	uv run pytest -q
 
 # Every e2e stack in turn; each is an image, a stubbed control plane and a
-# stubbed upstream, and asserts what reached the wire.
+# stubbed upstream, and asserts what reached the wire. Recreates every container,
+# so none carries state from an earlier run, and leaves them up; `make e2e-down`
+# removes them.
 e2e: e2e-standalone e2e-envoy-grpc
 
 e2e-standalone:
-	docker compose -f e2e/standalone/compose.yml up --build \
+	docker compose -f e2e/standalone/compose.yml up --build --force-recreate \
 		--abort-on-container-exit --exit-code-from driver
 
 e2e-envoy-grpc:
-	docker compose -f e2e/envoy-grpc/compose.yml up --build \
+	docker compose -f e2e/envoy-grpc/compose.yml up --build --force-recreate \
 		--abort-on-container-exit --exit-code-from driver
+
+# Removes every stack's containers and volumes.
+e2e-down:
+	docker compose -f e2e/standalone/compose.yml down -v --remove-orphans
+	docker compose -f e2e/envoy-grpc/compose.yml down -v --remove-orphans

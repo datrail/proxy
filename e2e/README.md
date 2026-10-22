@@ -7,6 +7,7 @@ upstream and a driver that asserts what actually crossed the wire.
 make e2e              # every stack in turn
 make e2e-standalone   # one stack
 make e2e-envoy-grpc
+make e2e-down         # remove every stack's containers and volumes
 ```
 
 The result is the `driver` container's exit code, which `--exit-code-from`
