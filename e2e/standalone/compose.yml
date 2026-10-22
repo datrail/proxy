@@ -15,7 +15,7 @@ x-proxy: &proxy
   healthcheck:
     # /health answers 200 whether or not a ticket is held — failing closed is a
     # designed state — so this is liveness for every variant alike.
-    test: ["CMD", "python", "-c", "import urllib.request;urllib.request.urlopen('http://localhost:8091/health').read()"]
+    test: ["CMD", "python", "-c", "import os,urllib.request;urllib.request.urlopen('http://localhost:%s/health' % os.environ.get('RAIL_PROXY_PORT', '8091')).read()"]
     interval: 2s
     timeout: 3s
     retries: 15
@@ -68,11 +68,6 @@ services:
       <<: *attached
       RAIL_SANDBOX_NAME: e2e-issuer-down
       RAIL_PROXY_PORT: "9100"
-    healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request;urllib.request.urlopen('http://localhost:9100/health').read()"]
-      interval: 2s
-      timeout: 3s
-      retries: 15
     depends_on: *attached-depends
 
   proxy-passthrough:
