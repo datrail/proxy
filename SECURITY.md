@@ -93,13 +93,14 @@ quiet.
   a pod is reachable by the agent. Envoy reaches it by sharing that group; do
   not put the agent in it.
 - **Request bodies.** proxy-envoy-grpc reads a request's body only when a
-  rule needs it, and only as much as Envoy is configured to send. It holds at
+  rule needs it, and only as much as Envoy is configured to send. It reads at
   most `RAIL_PROXY_MAX_BODY_BYTES` of one body and
-  `RAIL_PROXY_BODY_BUDGET_BYTES` of all of them at once, decodes no further
-  than the cap, so a decompression bomb stops there, and judges within
-  `RAIL_PROXY_BODY_TIMEOUT_SECONDS`. It never logs a body or any part of one:
+  `RAIL_PROXY_BODY_BUDGET_BYTES` of all of them at once, counting each until
+  the thread judging it ends; decoding and parsing a body make copies on top.
+  It decodes no further than the cap, so a decompression bomb stops there,
+  and answers within `RAIL_PROXY_BODY_TIMEOUT_SECONDS`. It never logs a body or any part of one:
   a refusal is logged with a reason, or the host. A body reaching a log, or a
-  body that makes the service hold or decode past those bounds, is a report.
+  body that makes the service read or decode past those bounds, is a report.
 - **Envoy's access log.** The reference Envoy configs log no request header,
   so never `x-rail`. A deployment that adds request headers to its access log
   format must leave `x-rail` out.

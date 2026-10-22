@@ -48,7 +48,31 @@ since many servers read `_` as `-`, and `x_rail` would reach one as `x-rail`.
 
 The service also judges each request, and refuses one its rules refuse:
 [Judging requests](#judging-requests). Until rules exist, it allows every
-request.
+request. Inside the service, both callouts run the same steps:
+
+```mermaid
+flowchart LR
+  check["ext_authz: Check"] --> request["Request"]
+  process["ext_proc: Process stream"] --> request
+  request --> headers{"judge the headers"}
+  headers -->|"needs the body"| read["read the body, under the cap and the budget"]
+  read --> view["decode, parse and judge it, in a worker thread, within the time budget"]
+  read -->|"a reason"| policy{"the policy for the reason"}
+  view -->|"a reason"| policy
+  headers -->|"allow"| decide["decide the x-rail headers"]
+  view -->|"allow"| decide
+  policy -->|"allow"| decide
+  headers -->|"deny"| outcome["Outcome"]
+  view -->|"deny"| outcome
+  policy -->|"deny"| outcome
+  decide --> outcome
+  outcome --> authz_answer["CheckResponse: OK with the changes, or 403"]
+  outcome --> proc_answer["ProcessingResponse: the changes, or ImmediateResponse 403"]
+```
+
+A failure before the verdict follows `RAIL_PROXY_ON_JUDGE_FAILURE`; one in
+`decide` forwards the request unchanged
+([Timeouts and failures](#timeouts-and-failures)).
 
 ### Principles
 
@@ -93,7 +117,9 @@ them from Rail Center, are still to come: until then every request is allowed.
 A rule can read the request's method, URL and headers, and its body, but
 never an `x-rail` header. The headers are judged first, and the body is read
 only when a rule that still applies needs it, so a deployment whose rules
-never need a body never has one read.
+never need a body never has one read. A header the agent repeated reaches a
+rule as one comma-joined value over ext_authz, unless it sets
+`encode_raw_headers`, and as each value over ext_proc.
 
 ### Which callout
 
@@ -112,9 +138,11 @@ twice.
 **ext_authz with a body** needs `pack_as_bytes: true`. Without it, Envoy
 replaces every byte that isn't UTF-8 with `!`, so the service judges the body
 as not sent, and warns once. Without `allow_partial_message`, Envoy answers
-`413` itself to a body over `max_request_bytes`. A body rule needs
-`with_request_body` even for chunked uploads: without it, Envoy doesn't tell
-the service a chunked body exists.
+`413` itself to a body over `max_request_bytes`. Keep `max_request_bytes` at
+or under `RAIL_PROXY_MAX_BODY_BYTES`: a larger body comes in a message the
+service refuses unread, which Envoy takes as a failed callout. A body rule
+needs `with_request_body` even for chunked uploads: without it, Envoy doesn't
+tell the service a chunked body exists.
 
 **ext_proc's body modes.** The service never changes the mode Envoy is
 configured with; it reads it from Envoy's first message. When a rule needs
@@ -124,10 +152,25 @@ and Envoy sends nothing upstream, headers included, before then.
 | `request_body_mode` | |
 |---|---|
 | `NONE` | no body: a body rule judges it as not sent |
-| `BUFFERED` | Envoy buffers the whole body first. Raise the listener's `per_connection_buffer_limit_bytes`: past it (1 MiB by default) Envoy answers `413` itself |
+| `BUFFERED` | Envoy buffers the whole body first. Raise the listener's `per_connection_buffer_limit_bytes`: past it (1 MiB by default) Envoy answers `413` itself. Keep it at or under `RAIL_PROXY_MAX_BODY_BYTES`, as `max_request_bytes` above |
 | `BUFFERED_PARTIAL` | as `BUFFERED`, but a body over Envoy's buffer arrives truncated |
 | `STREAMED` | with `send_body_without_waiting_for_header_response`, the answer to the headers waits for the body too |
 | `FULL_DUPLEX_STREAMED` | needs `request_trailer_mode: SEND`; the service sends the body back to Envoy |
+
+**A body that trailers follow** has no part that ends the stream, and Envoy
+sends the trailers only once the body is answered, whatever
+`request_trailer_mode` says:
+
+- `BUFFERED`: the one part is the whole body, and is judged.
+- `BUFFERED_PARTIAL`: it looks like a body cut short, and is `truncated`.
+- `STREAMED`: nothing says the body ended, so it can't be judged. The request
+  waits until `message_timeout`, and is then answered by `failure_mode_allow`.
+- `FULL_DUPLEX_STREAMED`: the trailers come without waiting, end the body,
+  and it is judged.
+
+An agent sends trailers over HTTP/2, or over HTTP/1 when the listener sets
+`enable_trailers`. Where it might, body rules need `BUFFERED` or
+`FULL_DUPLEX_STREAMED`.
 
 While the service holds a part, Envoy waits for its answer under ext_proc's
 `message_timeout`, 200 ms by default, so a slow upload in a streamed mode
@@ -161,10 +204,16 @@ stalls no other call, within `RAIL_PROXY_BODY_TIMEOUT_SECONDS` (0.15 s),
 under Envoy's default callout timeouts of 200 ms (ext_authz's `timeout`,
 ext_proc's `message_timeout`). Keep it under yours.
 
+A body still being judged when that time runs out is refused as
+`timed-out`. Its thread can't be stopped, so it keeps its share of
+`RAIL_PROXY_BODY_BUDGET_BYTES` until it ends, and stops at its next step.
+
 A callout that fails or times out is Envoy's to answer, by
 `failure_mode_allow`: forwarded unjudged when true, answered with an error
 when false (on a timeout, ext_authz's `403` and ext_proc's `504`). The service
-never sees it.
+never sees it. So body rules hold only with `failure_mode_allow: false`: with
+it true, a request whose callout fails, a body too large for the service's
+messages included, goes out unjudged.
 
 A failure inside the service before its verdict, while reading the request or
 judging it, is answered as `RAIL_PROXY_ON_JUDGE_FAILURE` says: refused by

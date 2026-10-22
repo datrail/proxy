@@ -302,8 +302,10 @@ def _request_end(data):
     head_end += 4
     head = data[:head_end].lower()
     if b"transfer-encoding: chunked" in head:
-        last = data.find(b"0\r\n\r\n", head_end)
-        return None if last < 0 else last + 5
+        # The last chunk, then any trailers, then a blank line.
+        last = data.find(b"\r\n0\r\n", head_end - 2)
+        end = -1 if last < 0 else data.find(b"\r\n\r\n", last + 2)
+        return None if end < 0 else end + 4
     length = 0
     for line in head.split(b"\r\n"):
         if line.startswith(b"content-length:"):
@@ -341,6 +343,30 @@ def upload(port, path, parts):
         connection.close()
 
 
+def upload_with_trailers(port, path, parts):
+    """As `upload`, with a trailer after the body, which `http.client` can't
+    send."""
+    with socket.create_connection(
+        ("envoy-variants", port), timeout=TIMEOUT_SECONDS
+    ) as connection:
+        connection.sendall(
+            f"POST {path} HTTP/1.1\r\n"
+            "Host: driver:18080\r\n"
+            "Content-Type: application/json\r\n"
+            "x-e2e-judge: body\r\n"
+            "Transfer-Encoding: chunked\r\n"
+            "Trailer: x-e2e-trailer\r\n"
+            "\r\n".encode()
+        )
+        for part in parts:
+            time.sleep(0.3)
+            connection.sendall(b"%x\r\n%s\r\n" % (len(part), part))
+        connection.sendall(b"0\r\nx-e2e-trailer: yes\r\n\r\n")
+        response = http.client.HTTPResponse(connection)
+        response.begin()
+        return response.status, response.read().decode()
+
+
 recorder = _Recorder(18080)
 for mode, port in [
     ("buffered", 15011),
@@ -365,5 +391,68 @@ for mode, port in [
     check(
         "not even the headers reach the upstream", not recorder.saw(f"/{mode}/denied")
     )
+
+    if mode == "buffered-partial":
+        # Trailers follow a body that no part ends: the same as one cut short.
+        print(f"ext_proc {mode} — a whole body with trailers: refused as truncated")
+        status, _ = upload_with_trailers(
+            port, f"/{mode}/trailers", [b'{"tool": ', b'"t"}']
+        )
+        check("the agent gets a 403", status == 403)
+        check("nothing reaches the upstream", not recorder.saw(f"/{mode}/trailers"))
+        continue
+    if mode.startswith("streamed"):
+        # No part ends it, and Envoy sends the trailers only once it's answered.
+        print(f"ext_proc {mode} — a body with trailers never ends: Envoy gives up")
+        status, _ = upload_with_trailers(
+            port, f"/{mode}/trailers", [b'{"tool": ', b'"t"}']
+        )
+        check("the agent gets a 504", status == 504)
+        check("nothing reaches the upstream", not recorder.saw(f"/{mode}/trailers"))
+        continue
+
+    print(f"ext_proc {mode} — a body with trailers is judged")
+    tool = f'"{mode}-trailed"}}'.encode()
+    status, _ = upload_with_trailers(port, f"/{mode}/trailed", [b'{"tool": ', tool])
+    check("the agent gets the upstream's 200", status == 200)
+    check(
+        "the upstream gets the headers and the body",
+        recorder.saw(f"/{mode}/trailed") and recorder.saw(f'"{mode}-trailed"'),
+    )
+    status, _ = upload_with_trailers(
+        port, f"/{mode}/trailed-denied", [b'{"deny": ', b"true}"]
+    )
+    check("one the judge refuses gets a 403", status == 403)
+    check(
+        "and nothing reaches the upstream",
+        not recorder.saw(f"/{mode}/trailed-denied"),
+    )
+
+print("ext_proc buffered, trailers sent too — a body with trailers is judged")
+status, _ = upload_with_trailers(15017, "/send-trailers", [b'{"tool": ', b'"st"}'])
+check("the agent gets the upstream's 200", status == 200)
+check(
+    "the upstream gets the headers and the body",
+    recorder.saw("/send-trailers") and recorder.saw('"st"'),
+)
+
+print("ext_authz with the body — a body the judge allows arrives whole")
+status, _ = upload(15016, "/ext-authz/allowed", [b'{"tool": ', b'"authz-tool"}'])
+check("the agent gets the upstream's 200", status == 200)
+check(
+    "the upstream gets the headers and the body",
+    recorder.saw("/ext-authz/allowed") and recorder.saw('"authz-tool"'),
+)
+
+print("ext_authz with the body — a body the judge refuses: nothing goes out")
+status, body = upload(15016, "/ext-authz/denied", [b'{"deny": ', b"true}"])
+check("the agent gets a 403", status == 403)
+check("with the fixed text", body == "request refused by policy\n")
+check("nothing reaches the upstream", not recorder.saw("/ext-authz/denied"))
+
+print("ext_authz with the body — past max_request_bytes: refused as truncated")
+status, _ = upload(15016, "/ext-authz/truncated", [b'{"tool": "', b"x" * 2048, b'"}'])
+check("the agent gets a 403", status == 403)
+check("nothing reaches the upstream", not recorder.saw("/ext-authz/truncated"))
 
 finish()

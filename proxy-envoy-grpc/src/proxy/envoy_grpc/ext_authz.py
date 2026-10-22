@@ -22,7 +22,7 @@ from proxy.core.judge import (
 )
 from proxy.core.request import Request, build_request
 from proxy.envoy_grpc.decision import Decision
-from proxy.envoy_grpc.outcome import Outcome, Pipeline
+from proxy.envoy_grpc.pipeline import Outcome, Pipeline
 
 log = logging.getLogger(__name__)
 
@@ -40,12 +40,20 @@ class ExtAuthz(external_auth_pb2_grpc.AuthorizationServicer):
 
     async def Check(self, request, context):
         http = request.attributes.request.http
-        names = list(http.headers) or [h.key for h in http.header_map.headers]
-        built, verdict = self._pipeline.judge_headers(lambda: _build_request(http))
+        # Every header's name, for `decide`: read while building the request,
+        # so a failure there is judged.
+        names: list[str] = []
+
+        def build() -> Request:
+            headers = _get_headers(http)
+            names.extend(name for name, _ in headers)
+            return _build_request(http, headers)
+
+        built, verdict = self._pipeline.judge_headers(build)
         if isinstance(verdict, NeedsBody):
             with self._pipeline.open_quota() as quota:
                 verdict = await self._pipeline.judge_body(
-                    built, lambda: self._read_body(http, quota)
+                    built, lambda: self._read_body(http, quota), quota
                 )
         return _answer(self._pipeline.get_outcome(verdict, http.host, names))
 
@@ -71,19 +79,20 @@ class ExtAuthz(external_auth_pb2_grpc.AuthorizationServicer):
             if int(headers.get("content-length") or 0) > 0:
                 return Reason.NOT_SENT
             return b""
-        return quota.take(len(http.raw_body)) or http.raw_body
+        reason = quota.take(len(http.raw_body))
+        if reason is not None:
+            return reason
+        return http.raw_body
 
 
-def _build_request(http) -> Request:
+def _build_request(http, headers: list[tuple[str, str]]) -> Request:
     return build_request(
         method=http.method,
         scheme=http.scheme,
         authority=http.host,
         path=http.path,
         headers=(
-            (name, value)
-            for name, value in _get_headers(http)
-            if name != _PARTIAL_BODY_HEADER
+            (name, value) for name, value in headers if name != _PARTIAL_BODY_HEADER
         ),
     )
 
@@ -94,7 +103,7 @@ def _get_headers(http) -> list[tuple[str, str]]:
     if http.headers:
         return list(http.headers.items())
     return [
-        (h.key, h.value or h.raw_value.decode("latin-1"))
+        (h.key, h.raw_value.decode("latin-1") if h.raw_value else h.value)
         for h in http.header_map.headers
     ]
 

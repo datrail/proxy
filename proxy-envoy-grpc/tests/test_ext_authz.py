@@ -3,6 +3,7 @@
 import asyncio
 import gzip
 import tempfile
+import threading
 import time
 from pathlib import Path
 
@@ -15,7 +16,7 @@ from google.rpc import code_pb2
 from core_support import wound_holder
 from proxy.core.body import BodyLimits, BodyPolicy, Reason
 from proxy.core.judge import Allow, AllowAll, Deny, NeedsBody
-from proxy.envoy_grpc import ext_authz, outcome, server
+from proxy.envoy_grpc import ext_authz, pipeline, server
 from proxy.envoy_grpc import settings as envoy_settings
 
 _SECRET = "Bearer agent-secret"
@@ -41,10 +42,10 @@ def _check_request(headers: dict[str, str]) -> external_auth_pb2.CheckRequest:
 
 def _servicer(monkeypatch, judge, on_judge_failure=None, limits=None, **judging):
     return ext_authz.ExtAuthz(
-        outcome.Pipeline(
+        pipeline.Pipeline(
             wound_holder(ticket="the-ticket"),
             _protected(monkeypatch),
-            outcome.Judging(
+            pipeline.Judging(
                 judge=judge,
                 on_failure=on_judge_failure or Deny(),
                 body_limits=limits or BodyLimits(),
@@ -127,7 +128,7 @@ async def test_the_judge_sees_headers_sent_as_a_header_map(monkeypatch):
     """Envoy's `encode_raw_headers` sends `header_map` instead of `headers`."""
     judge = _Recording()
     servicer = ext_authz.ExtAuthz(
-        outcome.Pipeline(None, _protected(monkeypatch), outcome.Judging(judge=judge))
+        pipeline.Pipeline(None, _protected(monkeypatch), pipeline.Judging(judge=judge))
     )
     request = external_auth_pb2.CheckRequest()
     http = request.attributes.request.http
@@ -152,7 +153,7 @@ async def test_a_denied_request_gets_403_and_no_changes(monkeypatch, caplog):
     def never(*_args):
         raise AssertionError("a denied request is not decided on")
 
-    monkeypatch.setattr(outcome, "decide", never)
+    monkeypatch.setattr(pipeline, "decide", never)
 
     with caplog.at_level("INFO"):
         response = await _check(
@@ -368,7 +369,7 @@ async def test_a_body_past_grpc_s_default_message_size_is_received(
         True,
         _protected(monkeypatch),
         socket_path,
-        outcome.Judging(judge=judge),
+        pipeline.Judging(judge=judge),
     )
     try:
         async with grpc.aio.insecure_channel(f"unix:{socket_path}") as channel:
@@ -470,4 +471,56 @@ async def test_a_slow_judgement_is_cut_short_without_stalling_other_calls(
     assert finished == ["quick", "slow"]
     assert elapsed < 0.4
     _assert_denied(slow_response)
+    assert "(timed-out); refusing it" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_a_timed_out_body_holds_the_budget_until_its_thread_ends(
+    monkeypatch, caplog
+):
+    """A thread can't be stopped, so one whose verdict came too late keeps
+    the body's bytes until it ends, and only then gives them back."""
+    release = threading.Event()
+
+    class Stuck(_BodyJudge):
+        def judge_body(self, request, body):
+            release.wait(5)
+            return Allow()
+
+    servicer = _servicer(
+        monkeypatch,
+        Stuck(),
+        limits=BodyLimits(max_bytes=4, budget_bytes=4),
+        body_timeout=0.05,
+    )
+    request = _with_body(raw=b"1234", partial="false", length=4)
+
+    _assert_denied(await servicer.Check(request, None))
+    assert "(timed-out); refusing it" in caplog.text
+    _assert_denied(await servicer.Check(request, None))
+    assert "(over-budget); refusing it" in caplog.text
+
+    release.set()
+    budget = servicer._pipeline._budget
+    for _ in range(100):
+        if budget.held_bytes == 0:
+            break
+        await asyncio.sleep(0.01)
+    assert budget.held_bytes == 0
+
+
+@pytest.mark.asyncio
+async def test_a_body_past_its_deadline_is_never_judged(monkeypatch, caplog):
+    """Work whose wait has ended stops at its next step."""
+    judge = _BodyJudge()
+    servicer = _servicer(monkeypatch, judge, body_timeout=0.05)
+    # The deadline passes once the view is built, before the judge runs.
+    monkeypatch.setattr(pipeline, "is_past", lambda deadline: True)
+
+    response = await servicer.Check(
+        _with_body(raw=b"{}", partial="false", length=2), None
+    )
+
+    _assert_denied(response)
+    assert judge.bodies == []
     assert "(timed-out); refusing it" in caplog.text

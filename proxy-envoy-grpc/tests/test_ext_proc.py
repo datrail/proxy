@@ -21,7 +21,7 @@ from envoy.service.ext_proc.v3 import (
 from core_support import wound_holder, xrail_params
 from proxy.core.body import BodyLimits
 from proxy.core.judge import Allow, Deny, NeedsBody
-from proxy.envoy_grpc import ext_proc, outcome, server
+from proxy.envoy_grpc import ext_proc, pipeline, server
 from proxy.envoy_grpc import settings as envoy_settings
 
 _SECRET = "Bearer agent-secret"
@@ -375,7 +375,7 @@ async def test_a_judge_failure_is_refused_by_default(monkeypatch, socket_path, c
         _body(b"data", True),
     ]
     srv = await _start(
-        monkeypatch, socket_path, judging=outcome.Judging(on_failure=Deny())
+        monkeypatch, socket_path, judging=pipeline.Judging(on_failure=Deny())
     )
     try:
         with caplog.at_level("DEBUG"):
@@ -400,7 +400,7 @@ async def test_a_judge_failure_is_forwarded_when_the_setting_allows(
 ):
     _break_building(monkeypatch)
     srv = await _start(
-        monkeypatch, socket_path, judging=outcome.Judging(on_failure=Allow())
+        monkeypatch, socket_path, judging=pipeline.Judging(on_failure=Allow())
     )
     try:
         [response] = await _process(socket_path, [_headers(_pseudo("mcp.example.com"))])
@@ -458,7 +458,7 @@ class _Live:
 
 
 def _judging(judge, max_bytes=1024, budget_bytes=1024, on_failure=None):
-    return outcome.Judging(
+    return pipeline.Judging(
         judge=judge,
         on_failure=on_failure or Deny(),
         body_limits=BodyLimits(max_bytes=max_bytes, budget_bytes=budget_bytes),
@@ -476,10 +476,16 @@ def _body_headers(mode, **kwargs):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    "mode", [_Mode.BUFFERED, _Mode.STREAMED], ids=["buffered", "streamed"]
+    ("mode", "parts"),
+    [
+        # A buffered body comes in one part.
+        (_Mode.BUFFERED, [_body(b"one,two", True)]),
+        (_Mode.STREAMED, [_body(b"one,", False), _body(b"two", True)]),
+    ],
+    ids=["buffered", "streamed"],
 )
 async def test_headers_are_answered_at_once_and_the_body_held(
-    monkeypatch, socket_path, mode
+    monkeypatch, socket_path, mode, parts
 ):
     """Where Envoy holds the body until it's answered, the headers go first;
     the body's parts are answered once the judge has the whole body."""
@@ -489,11 +495,11 @@ async def test_headers_are_answered_at_once_and_the_body_held(
         async with grpc.aio.insecure_channel(f"unix:{socket_path}") as channel:
             live = _Live(channel)
             assert await live.send(_body_headers(mode), then=1) == ["request_headers"]
-            assert await live.send(_body(b"one,", False), then=0) == []
-            assert await live.send(_body(b"two", True), then=2) == [
-                "request_body",
-                "request_body",
-            ]
+            for part in parts[:-1]:
+                assert await live.send(part, then=0) == []
+            assert await live.send(parts[-1], then=len(parts)) == [
+                "request_body"
+            ] * len(parts)
             await live.finish()
     finally:
         await srv.stop(None)
@@ -645,10 +651,32 @@ async def test_a_request_the_judge_denies_on_its_headers_is_refused_at_once(
 async def test_trailers_end_the_body(monkeypatch, socket_path):
     judge = _BodyJudge()
     messages = [
-        _body_headers(_Mode.STREAMED),
+        _body_headers(_Mode.FULL_DUPLEX_STREAMED),
         _body(b"all of it", False),
         _TRAILERS,
     ]
+    srv = await _start(monkeypatch, socket_path, judging=_judging(judge))
+    try:
+        responses = await _process(socket_path, messages)
+    finally:
+        await srv.stop(None)
+
+    assert judge.bodies == [b"all of it"]
+    assert [_part(r) for r in responses] == [
+        "request_headers",
+        "request_body",
+        "request_trailers",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_a_buffered_body_trailers_follow_is_judged_as_it_comes(
+    monkeypatch, socket_path
+):
+    """Envoy sends the trailers only once the body is answered, so the one
+    part of a buffered body is the whole of it."""
+    judge = _BodyJudge()
+    messages = [_body_headers(_Mode.BUFFERED), _body(b"all of it", False), _TRAILERS]
     srv = await _start(monkeypatch, socket_path, judging=_judging(judge))
     try:
         responses = await _process(socket_path, messages)

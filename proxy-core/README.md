@@ -58,7 +58,7 @@ it received and turns the verdict into its own answer.
   refused request is answered `403` with the text `request refused by policy`.
 - `proxy.core.body`: reading a body under bounds, for a judge that needs it.
   `BodyBudget` and `BodyQuota` bound what one body, and every body at once,
-  may hold. `build_view` decodes a body by `Content-Encoding` (`gzip`,
+  may read; decoding and parsing a body make copies on top. `build_view` decodes a body by `Content-Encoding` (`gzip`,
   `identity`), never past the cap, and parses it by `Content-Type` (JSON):
   the judge sees that view, never the raw bytes. A body that can't be judged
   as it is gets a `Reason`, which `BodyPolicy` turns into a verdict.
@@ -149,14 +149,16 @@ What a request gets when judging it fails, before any verdict: `deny` or
 
 #### `RAIL_PROXY_MAX_BODY_BYTES`
 
-The most of one body held, and decoded, in bytes. Defaults to `8388608`
-(8 MiB). Past it a body is `too-large`, or `decoded-too-large`.
+The most of one body read, and decoded, in bytes. Defaults to `8388608`
+(8 MiB), and can't be more than 1 GiB. Past it a body is `too-large`, or
+`decoded-too-large`.
 
 #### `RAIL_PROXY_BODY_BUDGET_BYTES`
 
-The most of every body held at once, in bytes. Defaults to four times
+The most of every body read at once, in bytes. Defaults to four times
 `RAIL_PROXY_MAX_BODY_BYTES`, and can't be less than it. A body that would pass
-it is `over-budget`.
+it is `over-budget`. A body counts until the thread judging it ends, even
+when that is after its verdict, as `timed-out`.
 
 #### `RAIL_PROXY_ALLOW_UNREADABLE_BODY`
 
@@ -168,4 +170,8 @@ by default: every such body is refused.
 #### `RAIL_PROXY_BODY_TIMEOUT_SECONDS`
 
 How long decoding, parsing and judging one body may take before it is
-`timed-out`. Defaults to `0.15`, under Envoy's default callout timeouts.
+`timed-out`, in seconds: a positive number. Defaults to `0.15`, under Envoy's
+default callout timeouts.
+
+Each of these is checked at start-up: a value that isn't one stops the
+service with exit code 2.

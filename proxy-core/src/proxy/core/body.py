@@ -1,8 +1,10 @@
 """The body of an HTTP message, read under bounds, for a rule that needs it.
 
 An interface reads a body only when the judge needs it. Each message's body is
-held up to `RAIL_PROXY_MAX_BODY_BYTES`, and the bodies held at once up to
-`RAIL_PROXY_BODY_BUDGET_BYTES`, so no burst makes the process hold more.
+read up to `RAIL_PROXY_MAX_BODY_BYTES`, and the bodies held at once up to
+`RAIL_PROXY_BODY_BUDGET_BYTES`, so no burst makes the process read more. The
+budget counts each body's bytes as received, once; decoding and parsing it
+make copies on top.
 
 Rules never see the raw bytes: `build_view` decodes them by
 `Content-Encoding`, last coding first, under the same cap, and parses them by
@@ -11,7 +13,9 @@ Rules never see the raw bytes: `build_view` decodes them by
 """
 
 import json
+import math
 import os
+import time
 import zlib
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
@@ -19,18 +23,20 @@ from enum import StrEnum
 from typing import Any, Self
 
 from proxy.core.judge import Allow, Deny
-from proxy.core.settings import ConfigError, seconds_setting
+from proxy.core.settings import ConfigError
 
 _MAX_BODY_BYTES = "RAIL_PROXY_MAX_BODY_BYTES"
 _BODY_BUDGET_BYTES = "RAIL_PROXY_BODY_BUDGET_BYTES"
 _DEFAULT_MAX_BODY_BYTES = 8 * 1024 * 1024
+# Leaves room under gRPC's 2 GiB message limit for the rest of a message.
+_LARGEST_MAX_BODY_BYTES = 1024 * 1024 * 1024
 # Bodies at the cap that may be held at once, by default.
 _DEFAULT_BUDGET_IN_CAPS = 4
 _ALLOW_UNREADABLE = "RAIL_PROXY_ALLOW_UNREADABLE_BODY"
 _BODY_TIMEOUT_SECONDS = "RAIL_PROXY_BODY_TIMEOUT_SECONDS"
 # Under Envoy's default callout timeouts (200 ms for ext_proc's
 # `message_timeout` and ext_authz's `timeout`).
-_DEFAULT_BODY_TIMEOUT_SECONDS = 0.15
+DEFAULT_BODY_TIMEOUT_SECONDS = 0.15
 
 
 class Reason(StrEnum):
@@ -56,6 +62,11 @@ def get_body_limits() -> BodyLimits:
     """From `RAIL_PROXY_MAX_BODY_BYTES` (8 MiB by default) and
     `RAIL_PROXY_BODY_BUDGET_BYTES` (4 caps by default), in bytes."""
     max_bytes = _get_bytes_setting(_MAX_BODY_BYTES) or _DEFAULT_MAX_BODY_BYTES
+    if max_bytes > _LARGEST_MAX_BODY_BYTES:
+        raise ConfigError(
+            f"{_MAX_BODY_BYTES}={max_bytes} is more than "
+            f"{_LARGEST_MAX_BODY_BYTES} (1 GiB)"
+        )
     budget_bytes = _get_bytes_setting(_BODY_BUDGET_BYTES) or (
         max_bytes * _DEFAULT_BUDGET_IN_CAPS
     )
@@ -71,7 +82,7 @@ def _get_bytes_setting(name: str) -> int | None:
     raw = os.environ.get(name, "").strip()
     if not raw:
         return None
-    if not raw.isdigit() or int(raw) == 0:
+    if not (raw.isascii() and raw.isdigit()) or int(raw) == 0:
         raise ConfigError(f"{name}={raw!r} is not a positive number of bytes")
     return int(raw)
 
@@ -119,6 +130,13 @@ class BodyQuota:
         self._taken += size
         return None
 
+    def detach(self) -> "BodyQuota":
+        """A quota that takes over the bytes counted so far, for whoever holds
+        them past this one's `close`."""
+        detached = BodyQuota(self._budget, self._max_bytes)
+        detached._taken, self._taken = self._taken, 0
+        return detached
+
     def close(self) -> None:
         self._budget._release(self._taken)
         self._taken = 0
@@ -159,7 +177,18 @@ def get_body_timeout() -> float:
     """From `RAIL_PROXY_BODY_TIMEOUT_SECONDS`: how long building a body's
     view and judging it may take before the body is `timed-out`. 0.15 s by
     default, under Envoy's default callout timeouts."""
-    return seconds_setting(_BODY_TIMEOUT_SECONDS, _DEFAULT_BODY_TIMEOUT_SECONDS)
+    raw = os.environ.get(_BODY_TIMEOUT_SECONDS, "").strip()
+    if not raw:
+        return DEFAULT_BODY_TIMEOUT_SECONDS
+    try:
+        value = float(raw)
+    except ValueError:
+        value = math.nan
+    if not math.isfinite(value) or value <= 0:
+        raise ConfigError(
+            f"{_BODY_TIMEOUT_SECONDS}={raw!r} is not a positive number of seconds"
+        )
+    return value
 
 
 @dataclass(frozen=True)
@@ -175,13 +204,19 @@ class BodyView:
 
 
 def build_view(
-    data: bytes, headers: Iterable[tuple[str, str]], max_bytes: int
+    data: bytes,
+    headers: Iterable[tuple[str, str]],
+    max_bytes: int,
+    deadline: float | None = None,
 ) -> BodyView | Reason:
     """Decode `data` by the message's `Content-Encoding`, last coding first,
     never past `max_bytes`, then parse it by its `Content-Type`. Slow on a
-    large body: run it off the event loop."""
+    large body: run it off the event loop. Once `time.monotonic()` passes
+    `deadline`, the next step doesn't start, and the body is `timed-out`."""
     headers = list(headers)
     for coding in reversed(_get_codings(headers)):
+        if is_past(deadline):
+            return Reason.TIMED_OUT
         decoder = _DECODERS.get(coding)
         if decoder is None:
             return Reason.UNSUPPORTED_ENCODING
@@ -192,11 +227,18 @@ def build_view(
     media_type = _get_media_type(headers)
     if not data or not _is_json(media_type):
         return BodyView(data, media_type)
+    if is_past(deadline):
+        return Reason.TIMED_OUT
     try:
         value = json.loads(data)
     except (ValueError, RecursionError):
         return Reason.MALFORMED
     return BodyView(data, media_type, is_json=True, json=value)
+
+
+def is_past(deadline: float | None) -> bool:
+    """Whether `time.monotonic()` has passed `deadline`, if there is one."""
+    return deadline is not None and time.monotonic() >= deadline
 
 
 def _get_codings(headers: list[tuple[str, str]]) -> list[str]:

@@ -25,7 +25,7 @@ from proxy.core.settings import ConfigError, plugin_enabled
 from proxy.core.xrail_auth import TicketHolder
 from proxy.envoy_grpc.ext_authz import ExtAuthz
 from proxy.envoy_grpc.ext_proc import ExtProc
-from proxy.envoy_grpc.outcome import Judging, Pipeline
+from proxy.envoy_grpc.pipeline import Judging, Pipeline
 from proxy.envoy_grpc.settings import (
     ProtectedHost,
     get_protected_hosts,

@@ -14,9 +14,11 @@ from proxy.core.xrail_auth import is_xrail_header
 
 @dataclass(frozen=True)
 class Request:
-    """`headers` are the agent's, in order and with repeats, without any
-    x-rail header or pseudo-header: a rule never sees a ticket, and the
-    pseudo-headers' values are the fields."""
+    """`headers` are the agent's, in order, without any x-rail header or
+    pseudo-header: a rule never sees a ticket, and the pseudo-headers' values
+    are the fields. A header the agent repeated comes as each value, or as one
+    comma-joined value when the interface received it so, as HTTP allows
+    (ext_authz without `encode_raw_headers`)."""
 
     method: str
     scheme: str

@@ -100,7 +100,8 @@ Envoy runs [`envoy-grpc/envoy.yaml`](envoy-grpc/envoy.yaml), the ext_authz
 example, with the test CA in place of the system bundle, and calls `ext` on a
 shared unix socket. [`envoy-ext-proc.yaml`](envoy-grpc/envoy-ext-proc.yaml) is
 the same over ext_proc, headers only. [`envoy-variants.yaml`](envoy-grpc/envoy-variants.yaml)
-is never an example: both callouts in one chain, and ext_proc in each body mode.
+is never an example: both callouts in one chain, ext_proc in each body mode,
+and ext_authz with the body.
 
 Most Envoys run the ext_authz example. They differ in the extension they call,
 and `envoy-misresolved` in where it resolves `upstream.test`.
@@ -116,7 +117,7 @@ and `envoy-misresolved` in where it resolves `upstream.test`.
 | `envoy-no-ext` | a socket nothing serves on | forwarded with the x-rail headers removed and no status; a protected host isn't routed |
 | `envoy-judged` + `ext-judged` | the ext_authz example; the e2e's judge | a 403 for a request refused on its headers, and for a body rule with no body sent; the upstream sees neither |
 | `envoy-ext-proc` + `ext-judged` | the ext_proc example | the ticket, routed as over ext_authz; the same two 403s |
-| `envoy-variants` + `ext-judged` | `envoy-variants.yaml` | both callouts: the ticket, routed once, with nothing more changed by the second call; each body mode: an allowed body arrives whole, a refused one sends nothing upstream, not even its headers |
+| `envoy-variants` + `ext-judged` | `envoy-variants.yaml` | both callouts: the ticket, routed once, with nothing more changed by the second call; each ext_proc body mode, and ext_authz with the body: an allowed body arrives whole, a refused one sends nothing upstream, not even its headers; a body trailers follow is judged in `BUFFERED` (trailers sent or not) and `FULL_DUPLEX_STREAMED`, refused as truncated in `BUFFERED_PARTIAL`, and never ends in `STREAMED` (a `504`); ext_authz past `max_request_bytes`: refused as truncated |
 | `image-user` | the extension's image, sleeping | nothing: its healthcheck asserts the uid |
 
 Every extension protects `upstream.test:8443`, `upstream-agent-port.test`,

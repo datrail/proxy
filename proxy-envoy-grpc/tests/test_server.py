@@ -21,7 +21,7 @@ from core_support import wound_holder, xrail_params
 from proxy.core import lifecycle
 from proxy.core.settings import ConfigError
 from proxy.core.xrail_auth import TicketHolder, Token
-from proxy.envoy_grpc import outcome, probe_health, server
+from proxy.envoy_grpc import pipeline, probe_health, server
 from proxy.envoy_grpc import settings as envoy_settings
 
 _ORDINARY = {
@@ -144,7 +144,7 @@ async def test_a_failure_while_deciding_is_answered_ok_with_no_changes(
         # The message is a header value, as an exception's message can be.
         raise ValueError(secret)
 
-    monkeypatch.setattr(outcome, "decide", broken)
+    monkeypatch.setattr(pipeline, "decide", broken)
     srv = await server._start_server(
         wound_holder(ticket="the-ticket"), True, _protected(monkeypatch), socket_path
     )
@@ -302,6 +302,9 @@ async def test_a_stale_socket_it_cannot_remove_is_a_configuration_error(
         {"RAIL_PROXY_ON_JUDGE_FAILURE": "refuse"},
         {"RAIL_PROXY_MAX_BODY_BYTES": "8MiB"},
         {"RAIL_PROXY_ALLOW_UNREADABLE_BODY": "too-big"},
+        {"RAIL_PROXY_MAX_BODY_BYTES": str(2**31)},
+        {"RAIL_PROXY_MAX_BODY_BYTES": "²"},
+        {"RAIL_PROXY_BODY_TIMEOUT_SECONDS": "150ms"},
     ],
     ids=[
         "bad-entry",
@@ -310,6 +313,9 @@ async def test_a_stale_socket_it_cannot_remove_is_a_configuration_error(
         "bad-judge-failure",
         "bad-body-cap",
         "bad-body-reason",
+        "body-cap-past-grpc",
+        "body-cap-not-ascii",
+        "bad-body-timeout",
     ],
 )
 def test_a_configuration_error_exits_2(monkeypatch, env):

@@ -14,6 +14,13 @@ configured with, which the first message names:
   too, so nothing goes upstream before the verdict.
 - `NONE`: no body will come, so it is judged as not sent.
 
+When trailers follow a body, no part of it ends the stream, and Envoy sends
+the trailers only once the body's parts are answered. `BUFFERED` sends the
+whole body in one part, so it's judged as it comes; `BUFFERED_PARTIAL` marks
+it as it marks a body cut short, so it's judged as truncated; in `STREAMED`
+nothing says the body ended, so the request waits until Envoy gives up.
+`FULL_DUPLEX_STREAMED` sends the trailers without waiting, and they end it.
+
 Every other part is answered unchanged, so a stream never stalls.
 """
 
@@ -37,7 +44,7 @@ from proxy.core.judge import (
     NeedsBody,
 )
 from proxy.core.request import Request, build_request
-from proxy.envoy_grpc.outcome import Outcome, Pipeline, log_failure
+from proxy.envoy_grpc.pipeline import Outcome, Pipeline, log_failure
 
 _Mode = ProcessingMode.BodySendMode
 _FULL_DUPLEX = _Mode.FULL_DUPLEX_STREAMED
@@ -106,12 +113,11 @@ class _Stream:
             if part == "request_headers":
                 return await self._answer_headers(message.request_headers)
             if waiting and part in ("request_body", "request_trailers"):
+                self._held.append((message, part))
                 return await self._read(message, part)
             return [_continue(message, part, self._echoed)]
         except Exception as exc:  # noqa: BLE001 - before the verdict, or after
             if waiting:
-                if not self._held or self._held[-1][0] is not message:
-                    self._held.append((message, part))
                 return self._release(self._pipeline.get_failure_verdict(exc))
             # Past the verdict, so as if this extension were down.
             log_failure(
@@ -135,10 +141,14 @@ class _Stream:
     async def _answer_headers(
         self, http_headers
     ) -> list[external_processor_pb2.ProcessingResponse]:
-        headers = _get_headers(http_headers)
-        self._target = _get_pseudo_header(headers, ":authority")
-        self._names = [name for name, _ in headers]
-        request, verdict = self._pipeline.judge_headers(lambda: _build_request(headers))
+        def build() -> Request:
+            # Read while building the request, so a failure there is judged.
+            headers = _get_headers(http_headers)
+            self._target = _get_pseudo_header(headers, ":authority")
+            self._names = [name for name, _ in headers]
+            return _build_request(headers)
+
+        request, verdict = self._pipeline.judge_headers(build)
         if isinstance(verdict, NeedsBody):
             if http_headers.end_of_stream:
                 verdict = await self._pipeline.judge_body(request, lambda: b"")
@@ -158,12 +168,13 @@ class _Stream:
     async def _read(
         self, message, part: str
     ) -> list[external_processor_pb2.ProcessingResponse]:
-        self._held.append((message, part))
+        """Judge the body once `message`, already held, ends it."""
         if part == "request_body":
             body = message.request_body
             reason = self._quota.take(len(body.body))
-            # Envoy sends this mode's body in one part, which doesn't end the
-            # stream when it was cut short.
+            # The buffered modes send the body in one part, which doesn't end
+            # the stream when trailers follow or, in `BUFFERED_PARTIAL`, when
+            # it was cut short: the two look the same.
             partial = self._mode == _Mode.BUFFERED_PARTIAL
             if reason is None and partial and not body.end_of_stream:
                 reason = Reason.TRUNCATED
@@ -171,14 +182,14 @@ class _Stream:
                 return self._release(
                     await self._pipeline.judge_body(self._request, lambda: reason)
                 )
-            if not body.end_of_stream:
+            if not body.end_of_stream and self._mode != _Mode.BUFFERED:
                 return []
-        # The body ended: on its last part, or with the trailers.
+        # The body ended: on its last part, in its one part, or with the trailers.
         data = b"".join(
             m.request_body.body for m, p in self._held if p == "request_body"
         )
         return self._release(
-            await self._pipeline.judge_body(self._request, lambda: data)
+            await self._pipeline.judge_body(self._request, lambda: data, self._quota)
         )
 
     def _release(
@@ -187,21 +198,21 @@ class _Stream:
         """Answer what was held, now that the verdict is in."""
         self.close()
         held, self._held = self._held, []
-        if isinstance(verdict, Deny):
-            self.ended = True
-            return [_denied()]
-        responses = [self._answer_verdict(verdict)] if self._holds_headers else []
+        if isinstance(verdict, Deny) or self._holds_headers:
+            responses = [self._answer_verdict(verdict)]
+        else:
+            responses = []
+        if self.ended:
+            return responses
         return responses + [_continue(m, p, self._echoed) for m, p in held]
 
     def _answer_verdict(
         self, verdict: Allow | Deny
     ) -> external_processor_pb2.ProcessingResponse:
-        response = _answer(
-            self._pipeline.get_outcome(verdict, self._target, self._names)
-        )
-        if response.HasField("immediate_response"):
+        """The answer to the headers, or, for a refusal, to the stream."""
+        if isinstance(verdict, Deny):
             self.ended = True
-        return response
+        return _answer(self._pipeline.get_outcome(verdict, self._target, self._names))
 
 
 def _get_echoed_parts(protocol_config) -> set[str]:

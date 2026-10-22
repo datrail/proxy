@@ -1,4 +1,4 @@
-"""What the extension answers for one request, whichever callout asked.
+"""Judging and deciding on one request, whichever callout asked.
 
 Each adapter has the server's one `Pipeline` judge a request, from its headers
 and, when the judge needs it, its body, then decide on it; and turns the
@@ -7,17 +7,21 @@ and, when the judge needs it, its body, then decide on it; and turns the
 
 import asyncio
 import logging
+import time
 import traceback
 from collections.abc import Callable, Iterable, Mapping
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 
 from proxy.core.body import (
+    DEFAULT_BODY_TIMEOUT_SECONDS,
     BodyBudget,
     BodyLimits,
     BodyPolicy,
     BodyQuota,
     Reason,
     build_view,
+    is_past,
 )
 from proxy.core.judge import Allow, AllowAll, Deny, Judge, NeedsBody
 from proxy.core.request import Request
@@ -47,7 +51,7 @@ class Judging:
     on_failure: Allow | Deny = field(default_factory=Deny)
     body_limits: BodyLimits = field(default_factory=BodyLimits)
     body_policy: BodyPolicy = field(default_factory=BodyPolicy)
-    body_timeout: float = 0.15
+    body_timeout: float = DEFAULT_BODY_TIMEOUT_SECONDS
 
 
 class Pipeline:
@@ -76,6 +80,8 @@ class Pipeline:
         self._budget = BodyBudget(judging.body_limits)
         self._policy = judging.body_policy
         self._body_timeout = judging.body_timeout
+        # Its own, so the quota can follow a thread that outlives its wait.
+        self._executor = ThreadPoolExecutor(thread_name_prefix="judge")
 
     def judge_headers(
         self, build_request: Callable[[], Request]
@@ -96,22 +102,22 @@ class Pipeline:
         return self._budget.open_quota()
 
     async def judge_body(
-        self, request: Request, read: Callable[[], bytes | Reason]
+        self,
+        request: Request,
+        read: Callable[[], bytes | Reason],
+        quota: BodyQuota | None = None,
     ) -> Allow | Deny:
         """The verdict once `read` has the body, or the policy's for the
         reason it can't be judged. The view is built and judged in a worker
         thread, so a large body doesn't stall other calls, within the time
-        budget, so Envoy is answered before it gives up."""
+        budget, so Envoy is answered before it gives up. `quota`, counting
+        the body's bytes, is given back only once the thread ends, even when
+        the verdict came first, as `timed-out`."""
         try:
             body = read()
             if isinstance(body, Reason):
                 return self._get_policy_verdict(body)
-            try:
-                async with asyncio.timeout(self._body_timeout):
-                    verdict = await asyncio.to_thread(self._judge_view, request, body)
-            except TimeoutError:
-                # The thread runs on to its end; only its answer is dropped.
-                verdict = Reason.TIMED_OUT
+            verdict = await self._judge_in_worker(request, body, quota)
             if isinstance(verdict, Reason):
                 return self._get_policy_verdict(verdict)
         except Exception as exc:  # noqa: BLE001 - answered as the setting says
@@ -119,10 +125,31 @@ class Pipeline:
         _log_if_denied(request, verdict, "body")
         return verdict
 
-    def _judge_view(self, request: Request, body: bytes) -> Allow | Deny | Reason:
-        view = build_view(body, request.headers, self._max_body_bytes)
+    async def _judge_in_worker(
+        self, request: Request, body: bytes, quota: BodyQuota | None
+    ) -> Allow | Deny | Reason:
+        loop = asyncio.get_running_loop()
+        deadline = time.monotonic() + self._body_timeout
+        work = self._executor.submit(self._judge_view, request, body, deadline)
+        if quota is not None:
+            # A thread can't be stopped: past a timeout it runs on, holding
+            # the body, so the bytes count until it ends.
+            held = quota.detach()
+            work.add_done_callback(lambda _: _close_soon(loop, held))
+        try:
+            async with asyncio.timeout(self._body_timeout):
+                return await asyncio.wrap_future(work)
+        except TimeoutError:
+            return Reason.TIMED_OUT
+
+    def _judge_view(
+        self, request: Request, body: bytes, deadline: float
+    ) -> Allow | Deny | Reason:
+        view = build_view(body, request.headers, self._max_body_bytes, deadline)
         if isinstance(view, Reason):
             return view
+        if is_past(deadline):
+            return Reason.TIMED_OUT
         return self._judge.judge_body(request, view)
 
     def _get_policy_verdict(self, reason: Reason) -> Allow | Deny:
@@ -157,6 +184,14 @@ class Pipeline:
         if decision.headers:
             self._ticket_headers.report(target, xrail_headers)
         return decision
+
+
+def _close_soon(loop: asyncio.AbstractEventLoop, quota: BodyQuota) -> None:
+    # May run in the worker thread; the budget is the event loop's.
+    try:
+        loop.call_soon_threadsafe(quota.close)
+    except RuntimeError:
+        pass  # The loop has closed, and the budget with it.
 
 
 def _log_if_denied(request: Request, verdict: object, judged_on: str) -> None:

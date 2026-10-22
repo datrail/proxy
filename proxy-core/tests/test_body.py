@@ -3,6 +3,7 @@ process-wide budget, the policy for a body that can't be judged, and the view
 rules see."""
 
 import gzip
+import time
 
 import pytest
 
@@ -43,7 +44,7 @@ def test_both_limits_can_be_set(monkeypatch):
 @pytest.mark.parametrize(
     "name", ["RAIL_PROXY_MAX_BODY_BYTES", "RAIL_PROXY_BODY_BUDGET_BYTES"]
 )
-@pytest.mark.parametrize("value", ["0", "-1", "8MiB", "1.5", "1e6"])
+@pytest.mark.parametrize("value", ["0", "-1", "8MiB", "1.5", "1e6", "²", "１０"])
 def test_a_limit_that_is_not_a_positive_number_of_bytes_is_refused(
     monkeypatch, name, value
 ):
@@ -51,6 +52,19 @@ def test_a_limit_that_is_not_a_positive_number_of_bytes_is_refused(
 
     with pytest.raises(ConfigError, match=name):
         get_body_limits()
+
+
+def test_a_cap_over_1_gib_is_refused(monkeypatch):
+    monkeypatch.setenv("RAIL_PROXY_MAX_BODY_BYTES", str(1024 * _MIB + 1))
+
+    with pytest.raises(ConfigError, match=r"more than 1073741824 \(1 GiB\)"):
+        get_body_limits()
+
+
+def test_a_cap_of_1_gib_is_taken(monkeypatch):
+    monkeypatch.setenv("RAIL_PROXY_MAX_BODY_BYTES", str(1024 * _MIB))
+
+    assert get_body_limits().max_bytes == 1024 * _MIB
 
 
 def test_a_budget_under_the_cap_is_refused(monkeypatch):
@@ -78,6 +92,18 @@ def test_bodies_past_the_budget_are_over_budget():
         assert first.take(10) is None
         assert second.take(5) is None
         assert second.take(1) == Reason.OVER_BUDGET
+
+
+def test_a_detached_quota_holds_the_bytes_until_it_is_closed():
+    budget = BodyBudget(BodyLimits(max_bytes=10, budget_bytes=10))
+
+    with budget.open_quota() as quota:
+        quota.take(10)
+        detached = quota.detach()
+    assert budget.held_bytes == 10
+
+    detached.close()
+    assert budget.held_bytes == 0
 
 
 def test_a_closed_quota_gives_its_bytes_back():
@@ -134,6 +160,16 @@ def test_the_body_timeout_is_a_setting(monkeypatch):
     monkeypatch.setenv("RAIL_PROXY_BODY_TIMEOUT_SECONDS", "0.5")
 
     assert get_body_timeout() == 0.5
+
+
+@pytest.mark.parametrize("value", ["150ms", "0", "-1", "inf", "nan"])
+def test_a_body_timeout_that_is_not_a_positive_number_of_seconds_is_refused(
+    monkeypatch, value
+):
+    monkeypatch.setenv("RAIL_PROXY_BODY_TIMEOUT_SECONDS", value)
+
+    with pytest.raises(ConfigError, match="RAIL_PROXY_BODY_TIMEOUT_SECONDS"):
+        get_body_timeout()
 
 
 _JSON = [("content-type", "application/json; charset=utf-8")]
@@ -234,6 +270,31 @@ def test_a_stacked_bomb_stops_at_the_cap():
 )
 def test_gzip_that_does_not_decode_is_malformed(data):
     assert build_view(data, [("content-encoding", "gzip")], 100) == Reason.MALFORMED
+
+
+def test_gzip_followed_by_padding_is_malformed():
+    data = _gzip(b"whole") + b"\x00" * 8
+
+    assert build_view(data, [("content-encoding", "gzip")], 100) == Reason.MALFORMED
+
+
+@pytest.mark.parametrize(
+    "headers",
+    [[("content-encoding", "gzip")], _JSON],
+    ids=["before-decoding", "before-parsing"],
+)
+def test_a_body_past_its_deadline_is_timed_out_before_the_next_step(headers):
+    data = _gzip(b"{}") if headers[0][0] == "content-encoding" else b"{}"
+
+    view = build_view(data, headers, 100, deadline=time.monotonic() - 1)
+
+    assert view == Reason.TIMED_OUT
+
+
+def test_a_body_within_its_deadline_is_built():
+    view = build_view(b"{}", _JSON, 100, deadline=time.monotonic() + 60)
+
+    assert view.is_json
 
 
 @pytest.mark.parametrize("coding", ["br", "zstd", "deflate", "compress"])

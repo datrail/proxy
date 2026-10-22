@@ -33,8 +33,9 @@ and, from the first release that has it, `ghcr.io/datrail/proxy-envoy-grpc`.
 - `proxy-envoy-grpc`, the proxy as a service Envoy calls on each request
   (ext_authz or ext_proc, over a unix socket), with an example Envoy config
   for each in `e2e/`. It attaches the same `x-rail` headers to protected hosts
-  and leaves the agent's other headers as sent. Its image is `ghcr.io/datrail/proxy-envoy-grpc`, released
-  from the same tags as `ghcr.io/datrail/proxy`.
+  and leaves the agent's other headers as sent. Its image is
+  `ghcr.io/datrail/proxy-envoy-grpc`, released from the same tags as
+  `ghcr.io/datrail/proxy`.
 - Judging requests, in `proxy-core`, run by `proxy-envoy-grpc` over either
   callout. A request is judged on its method, URL and headers, and on its
   body when a rule needs it, read in the mode Envoy is configured with and
