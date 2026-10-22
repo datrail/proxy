@@ -27,7 +27,8 @@ e2e/
 The unit suites drive each interface in-process, with the network mocked. They
 cannot show:
 
-- the **image** runs — the entrypoint, the non-root user, the mounted config
+- the **image** runs — the entrypoint, the non-root user, the mounted config,
+  the configured port
 - a **real socket**: a real server, a real DNS name, a real TCP connection
 - an MCP client completing a **real handshake over the wire**
 - the ticket states side by side in **one network**, which is how they are
@@ -69,7 +70,7 @@ into a `certs` volume and stays up, healthy once the files are written.
 | `proxy` | registered as `e2e-sandbox` | `x-rail: e2e-opaque-token` |
 | `proxy-unregistered` | a sandbox name Rail Center does not know | `x-rail-status: not-found`, no identity |
 | `proxy-expired` | `e2e-expired`: the only ticket has lapsed | `x-rail-status: expired`, no identity |
-| `proxy-issuer-down` | `e2e-issuer-down`: Rail Center answers 500 | `x-rail-status: issuer-unreachable`, no identity; it still starts and reports healthy |
+| `proxy-issuer-down` | `e2e-issuer-down`: Rail Center answers 500; `RAIL_PROXY_PORT=9100` | `x-rail-status: issuer-unreachable`, no identity; it still starts, on 9100, and reports healthy |
 | `proxy-passthrough` | sets nothing: the plugin is off by default | neither header |
 | `image-user` | the same image, sleeping | nothing: its healthcheck asserts the uid, and the driver waits on it |
 

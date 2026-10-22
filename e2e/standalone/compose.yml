@@ -61,11 +61,18 @@ services:
       RAIL_SANDBOX_NAME: e2e-expired
     depends_on: *attached-depends
 
+  # Also the one proxy on a port other than the default.
   proxy-issuer-down:
     <<: *proxy
     environment:
       <<: *attached
       RAIL_SANDBOX_NAME: e2e-issuer-down
+      RAIL_PROXY_PORT: "9100"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request;urllib.request.urlopen('http://localhost:9100/health').read()"]
+      interval: 2s
+      timeout: 3s
+      retries: 15
     depends_on: *attached-depends
 
   proxy-passthrough:
