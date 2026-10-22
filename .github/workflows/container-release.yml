@@ -22,7 +22,8 @@ permissions:
   attestations: write
 
 # Per repository, not per ref: two tags publishing at once would race to write
-# `:0.1` and `:latest`.
+# `:0.1` and `:latest`. A group keeps one pending run, so a third tag pushed
+# while one runs and one waits cancels the waiting one: push tags one at a time.
 concurrency:
   group: container-release-${{ github.repository }}
   cancel-in-progress: false
@@ -62,12 +63,15 @@ jobs:
             echo "latest=true" >> "$GITHUB_OUTPUT"
           fi
 
-  # Never publish an untested version: the suite runs on the tag itself.
+  # Never publish an untested version: the suite runs on the tag itself. A
+  # called workflow otherwise inherits this one's write grants.
   ci:
     needs: version
     uses: ./.github/workflows/ci.yml
     with:
       ref: ${{ needs.version.outputs.tag }}
+    permissions:
+      contents: read
 
   publish:
     needs: [version, ci]
@@ -128,7 +132,9 @@ jobs:
           # Off: the signed attestation below replaces buildx's unsigned provenance.
           provenance: false
           # Shared with ci.yml's e2e job, so a release reuses its amd64 layers:
-          # keep the scope names in step.
+          # keep the scope names in step. Not `github.workflow`, which is
+          # `CI` when ci.yml runs on master, so a release would never see
+          # those caches.
           cache-from: type=gha,scope=image-${{ matrix.stack }}
           cache-to: type=gha,mode=max,scope=image-${{ matrix.stack }}
 
