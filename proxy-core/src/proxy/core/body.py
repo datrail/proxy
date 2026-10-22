@@ -82,9 +82,14 @@ def _get_bytes_setting(name: str) -> int | None:
     raw = os.environ.get(name, "").strip()
     if not raw:
         return None
-    if not (raw.isascii() and raw.isdigit()) or int(raw) == 0:
-        raise ConfigError(f"{name}={raw!r} is not a positive number of bytes")
-    return int(raw)
+    message = f"{name}={raw!r} is not a positive number of bytes"
+    try:
+        value = int(raw)
+    except ValueError:
+        raise ConfigError(message) from None
+    if value <= 0:
+        raise ConfigError(message)
+    return value
 
 
 class BodyBudget:
@@ -180,14 +185,13 @@ def get_body_timeout() -> float:
     raw = os.environ.get(_BODY_TIMEOUT_SECONDS, "").strip()
     if not raw:
         return DEFAULT_BODY_TIMEOUT_SECONDS
+    message = f"{_BODY_TIMEOUT_SECONDS}={raw!r} is not a positive number of seconds"
     try:
         value = float(raw)
     except ValueError:
-        value = math.nan
+        raise ConfigError(message) from None
     if not math.isfinite(value) or value <= 0:
-        raise ConfigError(
-            f"{_BODY_TIMEOUT_SECONDS}={raw!r} is not a positive number of seconds"
-        )
+        raise ConfigError(message)
     return value
 
 
