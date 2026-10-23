@@ -13,19 +13,19 @@ from pathlib import Path
 
 import grpc
 import pytest
-from envoy.service.auth.v3 import external_auth_pb2, external_auth_pb2_grpc
 
 from core_support import wound_holder
-from envoy_support import BodyJudge, get_pseudo_headers, send_check
+from envoy_support import (
+    BodyJudge,
+    apply_check_response,
+    get_pseudo_headers,
+    send_check,
+    set_protected_hosts,
+)
+from proxy.core import lifecycle
 from proxy.core.settings import ConfigError
 from proxy.core.xrail_auth import TicketHolder, Token
 from proxy.envoy_grpc import pipeline, probe_health, server
-from proxy.envoy_grpc import settings as envoy_settings
-
-
-def _protected(monkeypatch, value="mcp.example.com"):
-    monkeypatch.setenv("RAIL_PROXY_PROTECTED_HOSTS", value)
-    return envoy_settings.get_protected_hosts(plugin_on=False)
 
 
 async def _check(path: Path, target: str, headers: dict[str, str]):
@@ -47,13 +47,44 @@ class _GatedSource:
 
 
 @pytest.mark.asyncio
+async def test_requests_are_answered_before_the_first_fetch(monkeypatch, socket_path):
+    """The socket is bound at once, and until the first fetch lands a protected
+    request gets `x-rail-status: issuer-unreachable`."""
+    source = _GatedSource()
+    holder = TicketHolder(source)
+
+    async with lifecycle.running(holder, wait_for_first_fetch=False):
+        srv = await server._start_server(
+            holder, True, set_protected_hosts(monkeypatch), socket_path
+        )
+        try:
+            before = await _check(socket_path, "mcp.example.com", {})
+            source.gate.set()
+            await asyncio.wait_for(_wait_for_ticket(holder), 5)
+            after = await _check(socket_path, "mcp.example.com", {})
+        finally:
+            await srv.stop(None)
+
+    assert apply_check_response({}, before)["x-rail-status"] == "issuer-unreachable"
+    assert "x-rail" not in apply_check_response({}, before)
+    assert apply_check_response({}, after)["x-rail"] == "the-ticket"
+
+
+async def _wait_for_ticket(holder: TicketHolder) -> None:
+    while holder.snapshot()[0] is None:
+        await asyncio.sleep(0.01)
+
+
+@pytest.mark.asyncio
 async def test_a_stale_socket_file_is_replaced(monkeypatch, socket_path):
     stale = socket.socket(socket.AF_UNIX)
     stale.bind(str(socket_path))
     stale.close()
     assert socket_path.is_socket()
 
-    srv = await server._start_server(None, False, _protected(monkeypatch), socket_path)
+    srv = await server._start_server(
+        None, False, set_protected_hosts(monkeypatch), socket_path
+    )
     try:
         response = await _check(socket_path, "open.example.com", {})
     finally:
@@ -64,7 +95,9 @@ async def test_a_stale_socket_file_is_replaced(monkeypatch, socket_path):
 
 @pytest.mark.asyncio
 async def test_the_socket_is_for_its_user_and_group_only(monkeypatch, socket_path):
-    srv = await server._start_server(None, False, _protected(monkeypatch), socket_path)
+    srv = await server._start_server(
+        None, False, set_protected_hosts(monkeypatch), socket_path
+    )
     try:
         mode = socket_path.stat().st_mode & 0o777
     finally:
@@ -78,7 +111,9 @@ async def test_a_file_that_is_not_a_socket_is_left_alone(monkeypatch, socket_pat
     socket_path.write_text("not ours")
 
     with pytest.raises(ConfigError, match="not a socket"):
-        await server._start_server(None, False, _protected(monkeypatch), socket_path)
+        await server._start_server(
+            None, False, set_protected_hosts(monkeypatch), socket_path
+        )
 
     assert socket_path.read_text() == "not ours"
 
@@ -90,7 +125,9 @@ async def test_a_socket_in_a_missing_directory_is_a_configuration_error(
     missing = socket_path.parent / "missing" / "ext.sock"
 
     with pytest.raises(ConfigError, match=f"cannot bind {missing}"):
-        await server._start_server(None, False, _protected(monkeypatch), missing)
+        await server._start_server(
+            None, False, set_protected_hosts(monkeypatch), missing
+        )
 
 
 @contextlib.contextmanager
@@ -123,7 +160,7 @@ async def test_a_directory_it_cannot_search_is_a_configuration_error(
         _mode(locked, 0o000),
         pytest.raises(ConfigError, match=f"cannot use {path}: Permission denied"),
     ):
-        await server._start_server(None, False, _protected(monkeypatch), path)
+        await server._start_server(None, False, set_protected_hosts(monkeypatch), path)
 
 
 @_AS_ROOT
@@ -141,40 +178,61 @@ async def test_a_stale_socket_it_cannot_remove_is_a_configuration_error(
             ConfigError, match=f"cannot use {socket_path}: Permission denied"
         ),
     ):
-        await server._start_server(None, False, _protected(monkeypatch), socket_path)
+        await server._start_server(
+            None, False, set_protected_hosts(monkeypatch), socket_path
+        )
 
     assert socket_path.is_socket()
 
 
 @pytest.mark.parametrize(
-    "env",
+    ("env", "error"),
     [
-        {"RAIL_PROXY_PROTECTED_HOSTS": "ftp://mcp.example.com"},
-        {
-            "RAIL_PLUGIN_ENABLED": "true",
-            "RAIL_PROXY_PROTECTED_HOSTS": "mcp.example.com",
-        },
-        {"RAIL_PLUGIN_ENABLED": "maybe"},
-        {"RAIL_PROXY_ON_JUDGE_FAILURE": "refuse"},
-        {"RAIL_PROXY_MAX_BODY_BYTES": "8MiB"},
-        {"RAIL_PROXY_ALLOW_UNREADABLE_BODY": "too-big"},
-        {"RAIL_PROXY_BODY_TIMEOUT_SECONDS": "150ms"},
-    ],
-    ids=[
-        "bad-entry",
-        "plugin-on-without-rail-center",
-        "bad-flag",
-        "bad-judge-failure",
-        "bad-body-cap",
-        "bad-body-reason",
-        "bad-body-timeout",
+        pytest.param(
+            {"RAIL_PROXY_PROTECTED_HOSTS": "ftp://mcp.example.com"},
+            "has a scheme other than http:// or https://",
+            id="bad-entry",
+        ),
+        pytest.param(
+            {
+                "RAIL_PLUGIN_ENABLED": "true",
+                "RAIL_PROXY_PROTECTED_HOSTS": "mcp.example.com",
+            },
+            "a Rail Center to fetch one from is required",
+            id="plugin-on-without-rail-center",
+        ),
+        pytest.param(
+            {"RAIL_PLUGIN_ENABLED": "maybe"}, "is not true or false", id="bad-flag"
+        ),
+        pytest.param(
+            {"RAIL_PROXY_ON_JUDGE_FAILURE": "refuse"},
+            "is not deny or allow",
+            id="bad-judge-failure",
+        ),
+        pytest.param(
+            {"RAIL_PROXY_MAX_BODY_BYTES": "8MiB"},
+            "is not a positive number of bytes",
+            id="bad-body-cap",
+        ),
+        pytest.param(
+            {"RAIL_PROXY_ALLOW_UNREADABLE_BODY": "too-big"},
+            "too-big is not a reason",
+            id="bad-body-reason",
+        ),
+        pytest.param(
+            {"RAIL_PROXY_BODY_TIMEOUT_SECONDS": "150ms"},
+            "is not a positive number of seconds",
+            id="bad-body-timeout",
+        ),
     ],
 )
-def test_a_configuration_error_exits_2(monkeypatch, env):
+def test_a_configuration_error_exits_2(monkeypatch, caplog, env, error):
+    """Each case is refused for its own error, not for one that comes first."""
     for name, value in env.items():
         monkeypatch.setenv(name, value)
 
     assert server.main() == 2
+    assert error in caplog.text
 
 
 @pytest.mark.asyncio
@@ -191,7 +249,7 @@ async def test_the_status_method(monkeypatch, socket_path, holder, ticket):
     """Answered whether or not a ticket is held, and never with the ticket."""
     enabled = holder is not None
     srv = await server._start_server(
-        holder, enabled, _protected(monkeypatch), socket_path
+        holder, enabled, set_protected_hosts(monkeypatch), socket_path
     )
     try:
         async with grpc.aio.insecure_channel(f"unix:{socket_path}") as channel:
@@ -219,7 +277,10 @@ def test_the_probe_exits_1_with_no_server(monkeypatch, socket_path, capsys):
 @pytest.mark.asyncio
 async def test_the_ticket_is_never_logged(monkeypatch, socket_path, caplog):
     srv = await server._start_server(
-        wound_holder(ticket="the-ticket"), True, _protected(monkeypatch), socket_path
+        wound_holder(ticket="the-ticket"),
+        True,
+        set_protected_hosts(monkeypatch),
+        socket_path,
     )
     try:
         with caplog.at_level("DEBUG"):
@@ -291,7 +352,10 @@ async def test_only_protected_requests_are_logged(monkeypatch, socket_path, capl
     """A missing ticket is warned about for requests that would have carried
     it, not for the agent's other traffic."""
     srv = await server._start_server(
-        wound_holder(reason="not-found"), True, _protected(monkeypatch), socket_path
+        wound_holder(reason="not-found"),
+        True,
+        set_protected_hosts(monkeypatch),
+        socket_path,
     )
     try:
         with caplog.at_level("DEBUG"):
@@ -313,31 +377,19 @@ async def test_a_body_past_grpc_s_default_message_size_is_received(
     as large as the cap and its headers."""
     judge = BodyJudge()
     body = b"x" * (5 * 1024 * 1024)
-    request = external_auth_pb2.CheckRequest()
-    http = request.attributes.request.http
-    http.host = "mcp.example.com"
-    http.headers.update(
-        {
-            **get_pseudo_headers("mcp.example.com"),
-            "x-envoy-auth-partial-body": "false",
-            "content-length": str(len(body)),
-        }
-    )
-    http.raw_body = body
     srv = await server._start_server(
         wound_holder(ticket="the-ticket"),
         True,
-        _protected(monkeypatch),
+        set_protected_hosts(monkeypatch),
         socket_path,
         pipeline.Judging(judge=judge),
     )
     try:
-        async with grpc.aio.insecure_channel(f"unix:{socket_path}") as channel:
-            response = await external_auth_pb2_grpc.AuthorizationStub(channel).Check(
-                request
-            )
+        response = await send_check(
+            socket_path, get_pseudo_headers("mcp.example.com"), body
+        )
     finally:
         await srv.stop(None)
 
     assert judge.bodies == [body]
-    assert response.status.code == 0
+    assert apply_check_response({}, response)["x-rail"] == "the-ticket"

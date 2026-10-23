@@ -7,30 +7,18 @@ from google.rpc import code_pb2
 
 from core_support import wound_holder, xrail_params
 from envoy_support import (
+    ORDINARY_HEADERS,
     SECRET,
     BodyJudge,
     apply_check_response,
     assert_check_denied,
     get_pseudo_headers,
     send_check,
+    set_protected_hosts,
 )
 from proxy.core.body import BodyLimits
 from proxy.core.judge import Allow, AllowAll, Deny
 from proxy.envoy_grpc import ext_authz, pipeline, server
-from proxy.envoy_grpc import settings as envoy_settings
-
-_ORDINARY = {
-    "host": "mcp.example.com",
-    "accept": "application/json, text/event-stream",
-    "content-type": "application/json",
-    "user-agent": "agent/1",
-    "x-trace": "abc",
-}
-
-
-def _protected(monkeypatch):
-    monkeypatch.setenv("RAIL_PROXY_PROTECTED_HOSTS", "mcp.example.com")
-    return envoy_settings.get_protected_hosts(plugin_on=False)
 
 
 def _check_request(headers: dict[str, str]) -> external_auth_pb2.CheckRequest:
@@ -50,7 +38,7 @@ def _servicer(monkeypatch, judge, on_judge_failure=None, limits=None, **judging)
     return ext_authz.ExtAuthz(
         pipeline.Pipeline(
             wound_holder(ticket="the-ticket"),
-            _protected(monkeypatch),
+            set_protected_hosts(monkeypatch),
             pipeline.Judging(
                 judge=judge,
                 on_failure=on_judge_failure or Deny(),
@@ -100,10 +88,10 @@ class _Answering:
 async def test_every_row_of_the_contract(monkeypatch, socket_path, case):
     """Over the socket, with every header overwritten, not appended."""
     srv = await server._start_server(
-        case.holder(), case.plugin, _protected(monkeypatch), socket_path
+        case.holder(), case.plugin, set_protected_hosts(monkeypatch), socket_path
     )
     try:
-        agent = {**_ORDINARY, **case.agent_headers}
+        agent = {"host": "mcp.example.com", **ORDINARY_HEADERS, **case.agent_headers}
         response = await send_check(
             socket_path, {**get_pseudo_headers("mcp.example.com"), **agent}
         )
@@ -129,7 +117,10 @@ async def test_an_unprotected_request_is_answered_ok_with_no_changes(
     monkeypatch, socket_path
 ):
     srv = await server._start_server(
-        wound_holder(ticket="the-ticket"), True, _protected(monkeypatch), socket_path
+        wound_holder(ticket="the-ticket"),
+        True,
+        set_protected_hosts(monkeypatch),
+        socket_path,
     )
     try:
         response = await send_check(
@@ -197,7 +188,9 @@ async def test_the_judge_sees_headers_sent_as_a_header_map(monkeypatch):
     """Envoy's `encode_raw_headers` sends `header_map` instead of `headers`."""
     judge = _Recording()
     servicer = ext_authz.ExtAuthz(
-        pipeline.Pipeline(None, _protected(monkeypatch), pipeline.Judging(judge=judge))
+        pipeline.Pipeline(
+            None, set_protected_hosts(monkeypatch), pipeline.Judging(judge=judge)
+        )
     )
     request = external_auth_pb2.CheckRequest()
     http = request.attributes.request.http
@@ -256,12 +249,15 @@ _FAILURES = {
 @pytest.mark.asyncio
 @pytest.mark.parametrize("failure", list(_FAILURES))
 @pytest.mark.parametrize(
-    ("on_failure", "action"),
-    [(Deny(), "refusing it"), (Allow(), "forwarding it unjudged")],
+    ("on_failure", "assert_answered", "action"),
+    [
+        (Deny(), assert_check_denied, "refusing it"),
+        (Allow(), _assert_forwarded_with_the_ticket, "forwarding it unjudged"),
+    ],
     ids=["refused-by-default", "forwarded-when-the-setting-allows"],
 )
 async def test_a_judge_failure_follows_the_setting(
-    monkeypatch, caplog, failure, on_failure, action
+    monkeypatch, caplog, failure, on_failure, assert_answered, action
 ):
     """A request that breaks the judging is never forwarded unjudged unless
     the setting says so, and then as an allowed one: decided on, with the
@@ -274,10 +270,7 @@ async def test_a_judge_failure_follows_the_setting(
             monkeypatch, judge, on_failure, {"authorization": SECRET}
         )
 
-    if isinstance(on_failure, Deny):
-        assert_check_denied(response)
-    else:
-        _assert_forwarded_with_the_ticket(response)
+    assert_answered(response)
     assert action in caplog.text
     assert "agent-secret" not in caplog.text
 

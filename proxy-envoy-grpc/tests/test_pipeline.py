@@ -27,7 +27,7 @@ def _build_request(headers=()):
 _REQUEST = _build_request()
 
 
-def _pipeline(judge, **judging) -> pipeline.Pipeline:
+def _build_pipeline(judge, **judging) -> pipeline.Pipeline:
     return pipeline.Pipeline(None, {}, pipeline.Judging(judge=judge, **judging))
 
 
@@ -44,16 +44,32 @@ async def test_the_judge_sees_the_body_decoded_and_parsed():
         [("content-encoding", "gzip"), ("content-type", "application/json")]
     )
     data = gzip.compress(b'{"method": "tools/call"}')
-    await _pipeline(Recording()).judge_body(request, lambda: data)
+    await _build_pipeline(Recording()).judge_body(request, lambda: data)
 
     [view] = seen
     assert view.json == {"method": "tools/call"}
 
 
 @pytest.mark.asyncio
+async def test_a_body_that_cannot_be_decoded_is_refused(caplog):
+    """The view's reason goes to the policy like any other: a gzip body past
+    the cap once decoded is never judged."""
+    judge = BodyJudge()
+    pipe = _build_pipeline(judge, body_limits=BodyLimits(max_bytes=64, budget_bytes=64))
+    request = _build_request([("content-encoding", "gzip")])
+    data = gzip.compress(b"\x00" * 1000)
+
+    verdict = await pipe.judge_body(request, lambda: data)
+
+    assert verdict == Deny()
+    assert judge.bodies == []
+    assert "(decoded-too-large); refusing it" in caplog.text
+
+
+@pytest.mark.asyncio
 async def test_a_reason_the_policy_allows_is_forwarded_unjudged(caplog):
     judge = BodyJudge()
-    pipe = _pipeline(judge, body_policy=BodyPolicy([Reason.TRUNCATED]))
+    pipe = _build_pipeline(judge, body_policy=BodyPolicy([Reason.TRUNCATED]))
 
     verdict = await pipe.judge_body(_REQUEST, lambda: Reason.TRUNCATED)
 
@@ -73,8 +89,8 @@ async def test_a_slow_judgement_is_cut_short_without_stalling_other_calls(caplog
             time.sleep(0.5)
             return Allow()
 
-    slow = _pipeline(Slow(), body_timeout=0.1)
-    quick = _pipeline(BodyJudge())
+    slow = _build_pipeline(Slow(), body_timeout=0.1)
+    quick = _build_pipeline(BodyJudge())
 
     async def judge(name, pipe):
         verdict = await pipe.judge_body(_REQUEST, lambda: b"{}")
@@ -102,7 +118,7 @@ async def test_a_timed_out_body_holds_the_budget_until_its_thread_ends(caplog):
             release.wait(5)
             return Allow()
 
-    pipe = _pipeline(
+    pipe = _build_pipeline(
         Stuck(), body_limits=BodyLimits(max_bytes=4, budget_bytes=4), body_timeout=0.05
     )
 
@@ -127,7 +143,7 @@ async def test_a_timed_out_body_holds_the_budget_until_its_thread_ends(caplog):
 async def test_a_body_past_its_deadline_is_never_judged(monkeypatch, caplog):
     """Work whose wait has ended stops at its next step."""
     judge = BodyJudge()
-    pipe = _pipeline(judge, body_timeout=0.05)
+    pipe = _build_pipeline(judge, body_timeout=0.05)
     # The deadline passes once the view is built, before the judge runs.
     monkeypatch.setattr(pipeline, "is_past", lambda deadline: True)
 
@@ -136,3 +152,13 @@ async def test_a_body_past_its_deadline_is_never_judged(monkeypatch, caplog):
     assert verdict == Deny()
     assert judge.bodies == []
     assert "(timed-out); refusing it" in caplog.text
+
+
+def test_a_body_given_back_after_its_loop_has_closed_is_dropped():
+    """A worker thread can outlive the event loop: the budget is gone with
+    it, so there is nothing to give back to."""
+    quota = _build_pipeline(BodyJudge()).open_quota()
+    loop = asyncio.new_event_loop()
+    loop.close()
+
+    pipeline._close_soon(loop, quota)

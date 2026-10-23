@@ -1,5 +1,6 @@
-"""Helpers for the proxy-envoy-grpc suite: a judge that reads bodies, and
-ext_authz's `Check` and the refusals both callouts answer with."""
+"""Helpers for the proxy-envoy-grpc suite: the protected hosts, a judge that
+reads bodies, and ext_authz's `Check` and the refusals both callouts answer
+with."""
 
 from pathlib import Path
 
@@ -7,10 +8,27 @@ import grpc
 from envoy.service.auth.v3 import external_auth_pb2, external_auth_pb2_grpc
 from google.rpc import code_pb2
 
+from core_support import AGENTS_OWN
 from proxy.core.judge import Allow, Deny, NeedsBody
+from proxy.envoy_grpc import settings
 
 # A header value, which must never reach the log.
-SECRET = "Bearer agent-secret"
+SECRET = AGENTS_OWN["authorization"]
+
+# Headers an agent sends that the extension leaves alone.
+ORDINARY_HEADERS = {
+    "accept": "application/json, text/event-stream",
+    "content-type": "application/json",
+    "user-agent": "agent/1",
+    "x-trace": "abc",
+}
+
+
+def set_protected_hosts(monkeypatch, value="mcp.example.com"):
+    """`RAIL_PROXY_PROTECTED_HOSTS` set to `value`, and the hosts read from
+    it with the plugin off."""
+    monkeypatch.setenv("RAIL_PROXY_PROTECTED_HOSTS", value)
+    return settings.get_protected_hosts(plugin_on=False)
 
 
 class BodyJudge:
@@ -34,13 +52,19 @@ def get_pseudo_headers(target: str) -> dict[str, str]:
     return {":method": "POST", ":scheme": "http", ":authority": target, ":path": "/mcp"}
 
 
-async def send_check(path: Path, headers: dict[str, str]):
+async def send_check(path: Path, headers: dict[str, str], body: bytes | None = None):
     """ext_authz's `Check` for a request with `headers`, `:authority`
-    included, over the socket at `path`."""
+    included, over the socket at `path`; with `body`, as Envoy sends a whole
+    one under `pack_as_bytes`."""
     request = external_auth_pb2.CheckRequest()
     http = request.attributes.request.http
     http.host = headers[":authority"]
     http.headers.update(headers)
+    if body is not None:
+        http.headers.update(
+            {"x-envoy-auth-partial-body": "false", "content-length": str(len(body))}
+        )
+        http.raw_body = body
     async with grpc.aio.insecure_channel(f"unix:{path}") as channel:
         return await external_auth_pb2_grpc.AuthorizationStub(channel).Check(request)
 

@@ -18,43 +18,33 @@ from envoy.service.ext_proc.v3 import (
 
 from core_support import wound_holder, xrail_params
 from envoy_support import (
+    ORDINARY_HEADERS,
     SECRET,
     BodyJudge,
     apply_check_response,
     assert_immediately_denied,
     get_pseudo_headers,
     send_check,
+    set_protected_hosts,
 )
 from proxy.core.body import BodyLimits
 from proxy.core.judge import Allow, Deny
 from proxy.envoy_grpc import ext_proc, pipeline, server
-from proxy.envoy_grpc import settings as envoy_settings
 
-_ORDINARY = {
-    "accept": "application/json, text/event-stream",
-    "content-type": "application/json",
-    "user-agent": "agent/1",
-    "x-trace": "abc",
-}
+_PROTECTED = "mcp.example.com,mcp-port.example.com:8443,http://plain.example.com"
 
 _Mode = ProcessingMode.BodySendMode
 
-# Every mode that sends the body, as (mode, without_waiting).
+# Every mode that sends the body, as (mode, without_waiting, headers_held):
+# where Envoy sends the body before the headers are answered, their answer
+# is held with it.
 _BODY_MODES = [
-    pytest.param(_Mode.BUFFERED, False, id="buffered"),
-    pytest.param(_Mode.BUFFERED_PARTIAL, False, id="buffered-partial"),
-    pytest.param(_Mode.STREAMED, False, id="streamed"),
-    pytest.param(_Mode.STREAMED, True, id="streamed-without-waiting"),
-    pytest.param(_Mode.FULL_DUPLEX_STREAMED, False, id="full-duplex"),
+    pytest.param(_Mode.BUFFERED, False, False, id="buffered"),
+    pytest.param(_Mode.BUFFERED_PARTIAL, False, False, id="buffered-partial"),
+    pytest.param(_Mode.STREAMED, False, False, id="streamed"),
+    pytest.param(_Mode.STREAMED, True, True, id="streamed-without-waiting"),
+    pytest.param(_Mode.FULL_DUPLEX_STREAMED, False, True, id="full-duplex"),
 ]
-
-
-def _protected(monkeypatch):
-    monkeypatch.setenv(
-        "RAIL_PROXY_PROTECTED_HOSTS",
-        "mcp.example.com,mcp-port.example.com:8443,http://plain.example.com",
-    )
-    return envoy_settings.get_protected_hosts(plugin_on=False)
 
 
 def _headers(
@@ -102,7 +92,11 @@ async def _start(monkeypatch, socket_path, judging=None):
 
 async def _start_with(monkeypatch, socket_path, holder, plugin, judging=None):
     return await server._start_server(
-        holder, plugin, _protected(monkeypatch), socket_path, judging
+        holder,
+        plugin,
+        set_protected_hosts(monkeypatch, _PROTECTED),
+        socket_path,
+        judging,
     )
 
 
@@ -117,6 +111,10 @@ def _applied(agent: dict[str, str], response) -> dict[str, str]:
     return sent
 
 
+def _assert_forwarded_with_the_ticket(response):
+    assert _applied({}, response)["x-rail"] == "the-ticket"
+
+
 def _part(response) -> str:
     return response.WhichOneof("response")
 
@@ -128,7 +126,7 @@ async def test_every_row_of_the_contract(monkeypatch, socket_path, case):
     try:
         agent = {
             **get_pseudo_headers("mcp.example.com"),
-            **_ORDINARY,
+            **ORDINARY_HEADERS,
             **case.agent_headers,
         }
         [response] = await _process(socket_path, [_headers(agent)])
@@ -267,7 +265,7 @@ async def test_two_calls_for_one_request_change_nothing_more(
     calls = [through_ext_authz, through_ext_proc]
     if first == "ext_proc":
         calls.reverse()
-    agent = {**get_pseudo_headers(target), **_ORDINARY, "x-rail": "forged"}
+    agent = {**get_pseudo_headers(target), **ORDINARY_HEADERS, "x-rail": "forged"}
     srv = await _start(monkeypatch, socket_path)
     try:
         once = await calls[0](agent)
@@ -346,15 +344,20 @@ async def test_a_failure_at_any_part_is_continued_and_the_stream_goes_on(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("on_failure", "parts", "action"),
+    ("on_failure", "parts", "assert_answered", "action"),
     [
-        (Deny(), ["immediate_response"], "refusing it"),
-        (Allow(), ["request_headers", "request_body"], "forwarding it unjudged"),
+        (Deny(), ["immediate_response"], assert_immediately_denied, "refusing it"),
+        (
+            Allow(),
+            ["request_headers", "request_body"],
+            _assert_forwarded_with_the_ticket,
+            "forwarding it unjudged",
+        ),
     ],
     ids=["refused-by-default", "forwarded-when-the-setting-allows"],
 )
 async def test_a_judge_failure_follows_the_setting(
-    monkeypatch, socket_path, caplog, on_failure, parts, action
+    monkeypatch, socket_path, caplog, on_failure, parts, assert_answered, action
 ):
     """Before the verdict: refused at once, ending the stream, unless the
     setting says otherwise. The log never has a header value."""
@@ -381,10 +384,7 @@ async def test_a_judge_failure_follows_the_setting(
         await srv.stop(None)
 
     assert [_part(r) for r in responses] == parts
-    if isinstance(on_failure, Deny):
-        assert_immediately_denied(responses[0])
-    else:
-        assert _applied({}, responses[0])["x-rail"] == "the-ticket"
+    assert_answered(responses[0])
     assert action in caplog.text
     assert "agent-secret" not in caplog.text
 
@@ -436,15 +436,10 @@ def _body_headers(mode, **kwargs):
     )
 
 
-def _holds_headers(mode, without_waiting) -> bool:
-    """Whether Envoy sends the body before the headers are answered."""
-    return without_waiting or mode == _Mode.FULL_DUPLEX_STREAMED
-
-
 @pytest.mark.asyncio
-@pytest.mark.parametrize(("mode", "without_waiting"), _BODY_MODES)
+@pytest.mark.parametrize(("mode", "without_waiting", "headers_held"), _BODY_MODES)
 async def test_nothing_goes_upstream_before_the_body_is_judged(
-    monkeypatch, socket_path, mode, without_waiting
+    monkeypatch, socket_path, mode, without_waiting, headers_held
 ):
     """Where Envoy holds the body until it's answered, the headers are
     answered first; where it sends the body before the headers are answered,
@@ -455,25 +450,26 @@ async def test_nothing_goes_upstream_before_the_body_is_judged(
         parts = [_body(b"one,two", True)]
     else:
         parts = [_body(b"one,", False), _body(b"two", True)]
-    held = _holds_headers(mode, without_waiting)
     judge = BodyJudge()
     srv = await _start(monkeypatch, socket_path, _judging(judge))
     try:
         async with grpc.aio.insecure_channel(f"unix:{socket_path}") as channel:
             live = _Live(channel)
             headers = _body_headers(mode, without_waiting=without_waiting)
-            first = [] if held else ["request_headers"]
+            first = [] if headers_held else ["request_headers"]
             assert await live.send(headers, then=len(first)) == first
             for part in parts[:-1]:
                 assert await live.send(part, then=0) == []
-            released = ["request_headers"] * held + ["request_body"] * len(parts)
+            released = ["request_headers"] * headers_held + ["request_body"] * len(
+                parts
+            )
             assert await live.send(parts[-1], then=len(released)) == released
             await live.finish()
     finally:
         await srv.stop(None)
 
     assert judge.bodies == [b"one,two"]
-    assert _applied({}, live.responses[0])["x-rail"] == "the-ticket"
+    _assert_forwarded_with_the_ticket(live.responses[0])
     if mode == _Mode.FULL_DUPLEX_STREAMED:
         streamed = [
             r.request_body.response.body_mutation.streamed_response.body
@@ -483,9 +479,9 @@ async def test_nothing_goes_upstream_before_the_body_is_judged(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(("mode", "without_waiting"), _BODY_MODES)
+@pytest.mark.parametrize(("mode", "without_waiting", "headers_held"), _BODY_MODES)
 async def test_a_body_the_judge_denies_is_refused(
-    monkeypatch, socket_path, caplog, mode, without_waiting
+    monkeypatch, socket_path, caplog, mode, without_waiting, headers_held
 ):
     """Refused from the body stage in every mode. Where the headers were
     answered first, that is all that went before."""
@@ -502,8 +498,7 @@ async def test_a_body_the_judge_denies_is_refused(
 
     *before, refused = responses
     assert_immediately_denied(refused)
-    held = _holds_headers(mode, without_waiting)
-    assert [_part(r) for r in before] == ([] if held else ["request_headers"])
+    assert [_part(r) for r in before] == ([] if headers_held else ["request_headers"])
     assert "refusing a request to mcp.example.com, judged on its body" in caplog.text
 
 
@@ -579,7 +574,7 @@ async def test_a_request_without_a_body_is_judged_with_an_empty_one(
         await srv.stop(None)
 
     assert judge.bodies == [b""]
-    assert _applied({}, response)["x-rail"] == "the-ticket"
+    _assert_forwarded_with_the_ticket(response)
 
 
 @pytest.mark.asyncio

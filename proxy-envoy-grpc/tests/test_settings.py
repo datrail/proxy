@@ -149,16 +149,17 @@ def test_the_plugin_off_reads_the_list_and_accepts_none(monkeypatch):
         ("http://gw.internal", False, False),
     ],
 )
-def test_a_plaintext_entry_is_warned_about_with_the_plugin_on(
+def test_a_plaintext_entry_is_warned_about_only_with_the_plugin_on(
     monkeypatch, caplog, entry, plugin_on, warned
 ):
     """A bare host is upgraded to HTTPS, and loopback traffic never leaves the
-    machine, so neither is warned about; nor is anything with the plugin off."""
+    machine, so neither is warned about; nor is anything with the plugin off.
+    The plaintext warning is the only one an entry gets."""
     with caplog.at_level("WARNING"):
         _hosts(monkeypatch, entry, plugin_on=plugin_on)
 
-    plaintext = [r for r in caplog.records if "plaintext http" in r.getMessage()]
-    assert bool(plaintext) is warned
+    assert bool(caplog.records) is warned
+    assert all("plaintext http" in r.getMessage() for r in caplog.records)
 
 
 @pytest.mark.parametrize(
