@@ -20,7 +20,7 @@ dev = [
     "pytest==9.1.1",
     "pytest-asyncio==1.4.0",
     # Imported by the suite, for a one-root CA bundle; also arrives through httpx.
-    "certifi==2026.7.22",
+    "certifi==2026.10.19",
     # [format] makes `date-time` an assertion: the expires_at checks depend on it.
     "jsonschema[format]==4.26.0",
     "pytest-timeout==2.3.1",
