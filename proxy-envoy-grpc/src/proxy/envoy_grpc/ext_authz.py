@@ -41,24 +41,26 @@ class ExtAuthz(external_auth_pb2_grpc.AuthorizationServicer):
 
     async def Check(self, request, context):
         http = request.attributes.request.http
-        # Every header's name, for `decide`: read while building the request,
-        # so a failure there is judged.
-        names: list[str] = []
+        # Every header, for `decide` and the body: read while building the
+        # request, so a failure there is judged.
+        headers: list[tuple[str, str]] = []
 
         def build() -> Request:
-            headers = _get_headers(http)
-            names.extend(name for name, _ in headers)
+            headers.extend(_get_headers(http))
             return _build_request(http, headers)
 
         built, verdict = self._pipeline.judge_headers(build)
         if isinstance(verdict, NeedsBody):
             with self._pipeline.open_quota() as quota:
                 verdict = await self._pipeline.judge_body(
-                    built, lambda: self._read_body(http, quota), quota
+                    built, lambda: self._read_body(http, dict(headers), quota), quota
                 )
+        names = [name for name, _ in headers]
         return _answer(self._pipeline.get_outcome(verdict, http.host, names))
 
-    def _read_body(self, http, quota: BodyQuota) -> bytes | Reason:
+    def _read_body(
+        self, http, headers: dict[str, str], quota: BodyQuota
+    ) -> bytes | Reason:
         if http.body:
             # Without `pack_as_bytes`, Envoy replaces every byte that isn't
             # UTF-8 with `!`, so the body may not be the agent's.
@@ -70,7 +72,6 @@ class ExtAuthz(external_auth_pb2_grpc.AuthorizationServicer):
                     "with_request_body. Judged as not sent."
                 )
             return Reason.NOT_SENT
-        headers = dict(_get_headers(http))
         partial = headers.get(_PARTIAL_BODY_HEADER)
         if partial == "true":
             return Reason.TRUNCATED

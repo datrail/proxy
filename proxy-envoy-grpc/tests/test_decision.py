@@ -4,8 +4,8 @@ and where a protected request is sent."""
 import pytest
 
 from core_support import xrail_params
+from envoy_support import set_protected_hosts
 from proxy.core.xrail_auth import OutboundHeaders, outbound_headers
-from proxy.envoy_grpc import settings
 from proxy.envoy_grpc.decision import Decision, decide
 
 # What an ordinary MCP client sends, besides anything a test adds.
@@ -18,11 +18,6 @@ _ORDINARY = {
     "x-trace": "abc",
     "cookie": "session=1",
 }
-
-
-def _protected_hosts(monkeypatch, value):
-    monkeypatch.setenv("RAIL_PROXY_PROTECTED_HOSTS", value)
-    return settings.get_protected_hosts(plugin_on=False)
 
 
 def _forwarded(agent: dict[str, str], decision: Decision) -> dict[str, str]:
@@ -38,7 +33,7 @@ def _forwarded(agent: dict[str, str], decision: Decision) -> dict[str, str]:
 
 @pytest.mark.parametrize("case", xrail_params("envoy-grpc"))
 def test_a_protected_request_matches_every_row_of_the_contract(monkeypatch, case):
-    protected_hosts = _protected_hosts(monkeypatch, "mcp.example.com")
+    protected_hosts = set_protected_hosts(monkeypatch, "mcp.example.com")
     agent = {**_ORDINARY, **case.agent_headers}
 
     decision = decide(
@@ -75,7 +70,7 @@ def test_where_a_protected_request_goes(
     """HTTPS unless the entry says `http://`; the entry's port, else the
     agent's, where `:80` counts as no port."""
     decision = decide(
-        target, [], _protected_hosts(monkeypatch, entry), OutboundHeaders()
+        target, [], set_protected_hosts(monkeypatch, entry), OutboundHeaders()
     )
 
     assert decision.headers["x-rail-upstream"] == upstream
@@ -97,7 +92,7 @@ def test_the_host_is_matched_as_the_entry_was_read(
 ):
     """Case, one trailing dot and IPv6 brackets don't change the host."""
     decision = decide(
-        target, [], _protected_hosts(monkeypatch, entry), OutboundHeaders()
+        target, [], set_protected_hosts(monkeypatch, entry), OutboundHeaders()
     )
 
     assert decision.headers[":authority"] == rewritten
@@ -116,7 +111,7 @@ def test_the_host_is_matched_as_the_entry_was_read(
 )
 def test_an_unprotected_request_is_left_alone(monkeypatch, target):
     """No ticket, no header removed, not upgraded to HTTPS, not rerouted."""
-    protected_hosts = _protected_hosts(
+    protected_hosts = set_protected_hosts(
         monkeypatch, "mcp.example.com,10.0.0.7,[2001:db8::1]"
     )
     agent = {**_ORDINARY, "authorization": "Bearer agent-secret"}
@@ -126,27 +121,25 @@ def test_an_unprotected_request_is_left_alone(monkeypatch, target):
 
 
 def test_only_x_rail_headers_are_removed_whatever_their_case(monkeypatch):
-    agent = ["Content-Type", "Authorization", ":path", "X-Rail", "X-Rail-Foo"]
+    """A header merely starting with `x-rail` is not an x-rail header."""
+    agent = [
+        "Content-Type",
+        "Authorization",
+        ":path",
+        "X-Rail",
+        "X-Rail-Foo",
+        "x-railway-id",
+        "x-rails",
+    ]
 
     decision = decide(
         "mcp.example.com",
         agent,
-        _protected_hosts(monkeypatch, "mcp.example.com"),
+        set_protected_hosts(monkeypatch, "mcp.example.com"),
         OutboundHeaders(),
     )
 
     assert decision.remove == {"x-rail", "x-rail-foo"}
-
-
-def test_a_header_merely_starting_with_x_rail_is_not_an_x_rail_header(monkeypatch):
-    decision = decide(
-        "mcp.example.com",
-        ["x-railway-id", "x-rails"],
-        _protected_hosts(monkeypatch, "mcp.example.com"),
-        OutboundHeaders(),
-    )
-
-    assert decision.remove == frozenset()
 
 
 def test_a_header_that_is_set_is_never_also_removed(monkeypatch):
@@ -158,7 +151,7 @@ def test_a_header_that_is_set_is_never_also_removed(monkeypatch):
     decision = decide(
         "mcp.example.com",
         agent,
-        _protected_hosts(monkeypatch, "mcp.example.com"),
+        set_protected_hosts(monkeypatch, "mcp.example.com"),
         outbound,
     )
 
@@ -172,6 +165,6 @@ def test_a_target_that_cannot_be_parsed_raises(monkeypatch, target):
         decide(
             target,
             [],
-            _protected_hosts(monkeypatch, "mcp.example.com"),
+            set_protected_hosts(monkeypatch, "mcp.example.com"),
             OutboundHeaders(),
         )

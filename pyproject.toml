@@ -32,14 +32,14 @@ dev = [
 namespace-packages = ["proxy-*/src/proxy"]
 
 [tool.ruff.lint.isort]
-known-first-party = ["proxy", "core_support", "standalone_support"]
+known-first-party = ["proxy", "core_support", "envoy_support", "standalone_support"]
 
 [tool.pytest.ini_options]
 testpaths = ["proxy-*"]
 # Several members have a tests/ folder, so tests are imported by path.
 addopts = "--import-mode=importlib"
 # So tests can import the *_support.py helpers, which importlib mode otherwise prevents.
-pythonpath = ["proxy-core/tests", "proxy-standalone/tests"]
+pythonpath = ["proxy-core/tests", "proxy-envoy-grpc/tests", "proxy-standalone/tests"]
 asyncio_mode = "strict"
 # Seconds per test: turns a hang into a named failure.
 timeout = 30

@@ -1,30 +1,24 @@
 """The ext_authz adapter: the request it builds, the judge, and the answer."""
 
-import asyncio
-import gzip
-import tempfile
-import threading
-import time
-from pathlib import Path
-
-import grpc
 import pytest
-from envoy.config.core.v3.base_pb2 import HeaderValue
-from envoy.service.auth.v3 import external_auth_pb2, external_auth_pb2_grpc
+from envoy.config.core.v3.base_pb2 import HeaderValue, HeaderValueOption
+from envoy.service.auth.v3 import external_auth_pb2
 from google.rpc import code_pb2
 
-from core_support import wound_holder
-from proxy.core.body import BodyLimits, BodyPolicy, Reason
-from proxy.core.judge import Allow, AllowAll, Deny, NeedsBody
+from core_support import wound_holder, xrail_params
+from envoy_support import (
+    ORDINARY_HEADERS,
+    SECRET,
+    BodyJudge,
+    apply_check_response,
+    assert_check_denied,
+    get_pseudo_headers,
+    send_check,
+    set_protected_hosts,
+)
+from proxy.core.body import BodyLimits
+from proxy.core.judge import Allow, AllowAll, Deny
 from proxy.envoy_grpc import ext_authz, pipeline, server
-from proxy.envoy_grpc import settings as envoy_settings
-
-_SECRET = "Bearer agent-secret"
-
-
-def _protected(monkeypatch):
-    monkeypatch.setenv("RAIL_PROXY_PROTECTED_HOSTS", "mcp.example.com")
-    return envoy_settings.get_protected_hosts(plugin_on=False)
 
 
 def _check_request(headers: dict[str, str]) -> external_auth_pb2.CheckRequest:
@@ -44,7 +38,7 @@ def _servicer(monkeypatch, judge, on_judge_failure=None, limits=None, **judging)
     return ext_authz.ExtAuthz(
         pipeline.Pipeline(
             wound_holder(ticket="the-ticket"),
-            _protected(monkeypatch),
+            set_protected_hosts(monkeypatch),
             pipeline.Judging(
                 judge=judge,
                 on_failure=on_judge_failure or Deny(),
@@ -58,17 +52,6 @@ def _servicer(monkeypatch, judge, on_judge_failure=None, limits=None, **judging)
 async def _check(monkeypatch, judge, on_judge_failure, headers=None):
     servicer = _servicer(monkeypatch, judge, on_judge_failure)
     return await servicer.Check(_check_request(headers or {}), None)
-
-
-def _assert_denied(response):
-    assert response.status.code == code_pb2.PERMISSION_DENIED
-    denied = response.denied_response
-    assert denied.status.code == 403
-    assert denied.body == "request refused by policy\n"
-    assert {h.header.key: h.header.value for h in denied.headers} == {
-        "content-type": "text/plain"
-    }
-    assert not response.HasField("ok_response")
 
 
 def _assert_forwarded_with_the_ticket(response):
@@ -89,7 +72,7 @@ class _Recording:
 class _Raising:
     def judge_headers(self, request):
         # The message is a header value, as an exception's message can be.
-        raise ValueError(_SECRET)
+        raise ValueError(SECRET)
 
 
 class _Answering:
@@ -98,6 +81,83 @@ class _Answering:
 
     def judge_headers(self, request):
         return self.verdict
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("case", xrail_params("envoy-grpc"))
+async def test_every_row_of_the_contract(monkeypatch, socket_path, case):
+    """Over the socket, with every header overwritten, not appended."""
+    srv = await server._start_server(
+        case.holder(), case.plugin, set_protected_hosts(monkeypatch), socket_path
+    )
+    try:
+        agent = {"host": "mcp.example.com", **ORDINARY_HEADERS, **case.agent_headers}
+        response = await send_check(
+            socket_path, {**get_pseudo_headers("mcp.example.com"), **agent}
+        )
+    finally:
+        await srv.stop(None)
+
+    assert response.status.code == code_pb2.OK
+    assert {h.append_action for h in response.ok_response.headers} == {
+        HeaderValueOption.OVERWRITE_IF_EXISTS_OR_ADD
+    }
+    sent = apply_check_response(agent, response)
+    for name, value in case.expected.items():
+        assert sent[name] == value
+    for name, value in case.forwarded.items():
+        assert sent.get(name) == value
+    assert not set(sent) & case.absent
+    agents_own = {k: v for k, v in agent.items() if not k.startswith("x-rail")}
+    assert agents_own.items() <= sent.items()
+
+
+@pytest.mark.asyncio
+async def test_an_unprotected_request_is_answered_ok_with_no_changes(
+    monkeypatch, socket_path
+):
+    srv = await server._start_server(
+        wound_holder(ticket="the-ticket"),
+        True,
+        set_protected_hosts(monkeypatch),
+        socket_path,
+    )
+    try:
+        response = await send_check(
+            socket_path, {**get_pseudo_headers("open.example.com"), "x-rail": "x"}
+        )
+    finally:
+        await srv.stop(None)
+
+    assert response.status.code == code_pb2.OK
+    assert not response.ok_response.headers
+    assert not response.ok_response.headers_to_remove
+
+
+@pytest.mark.asyncio
+async def test_a_failure_while_deciding_is_answered_ok_with_no_changes(
+    monkeypatch, caplog
+):
+    """Envoy then forwards the request as if this server were down. The log has
+    the traceback, but no header value."""
+
+    def broken(*_args):
+        # The message is a header value, as an exception's message can be.
+        raise ValueError(SECRET)
+
+    monkeypatch.setattr(pipeline, "decide", broken)
+
+    with caplog.at_level("DEBUG"):
+        response = await _check(
+            monkeypatch, AllowAll(), Deny(), {"authorization": SECRET}
+        )
+
+    assert response.status.code == code_pb2.OK
+    assert not response.ok_response.headers
+    assert not response.ok_response.headers_to_remove
+    assert "could not decide" in caplog.text
+    assert "in broken" in caplog.text  # the traceback's frame
+    assert "agent-secret" not in caplog.text
 
 
 @pytest.mark.asyncio
@@ -113,14 +173,14 @@ async def test_the_judge_sees_the_request_without_x_rail_or_envoy_headers(
         {
             "x-rail": "forged",
             "x-envoy-auth-partial-body": "false",
-            "authorization": _SECRET,
+            "authorization": SECRET,
         },
     )
 
     request = judge.seen
     assert (request.method, request.scheme) == ("POST", "http")
     assert (request.authority, request.path) == ("mcp.example.com", "/mcp?session=1")
-    assert dict(request.headers) == {"authorization": _SECRET}
+    assert dict(request.headers) == {"authorization": SECRET}
 
 
 @pytest.mark.asyncio
@@ -128,7 +188,9 @@ async def test_the_judge_sees_headers_sent_as_a_header_map(monkeypatch):
     """Envoy's `encode_raw_headers` sends `header_map` instead of `headers`."""
     judge = _Recording()
     servicer = ext_authz.ExtAuthz(
-        pipeline.Pipeline(None, _protected(monkeypatch), pipeline.Judging(judge=judge))
+        pipeline.Pipeline(
+            None, set_protected_hosts(monkeypatch), pipeline.Judging(judge=judge)
+        )
     )
     request = external_auth_pb2.CheckRequest()
     http = request.attributes.request.http
@@ -157,43 +219,19 @@ async def test_a_denied_request_gets_403_and_no_changes(monkeypatch, caplog):
 
     with caplog.at_level("INFO"):
         response = await _check(
-            monkeypatch, _Answering(Deny()), Allow(), {"authorization": _SECRET}
+            monkeypatch, _Answering(Deny()), Allow(), {"authorization": SECRET}
         )
 
-    _assert_denied(response)
+    assert_check_denied(response)
     assert "refusing a request to mcp.example.com, judged on its headers" in (
         caplog.text
     )
     assert "agent-secret" not in caplog.text
 
 
-@pytest.mark.asyncio
-async def test_allow_all_forwards_with_the_x_rail_headers(monkeypatch):
-    response = await _check(monkeypatch, AllowAll(), Deny())
-
-    _assert_forwarded_with_the_ticket(response)
-
-
-class _BodyJudge:
-    """Needs every body, and denies one that says so."""
-
-    def __init__(self, raises=False) -> None:
-        self.raises = raises
-        self.bodies: list[bytes] = []
-
-    def judge_headers(self, request):
-        return NeedsBody()
-
-    def judge_body(self, request, body):
-        if self.raises:
-            raise ValueError(_SECRET)
-        self.bodies.append(body.data)
-        return Deny() if b"deny" in body.data else Allow()
-
-
 def _break_building(monkeypatch):
     def broken(*_args, **_kwargs):
-        raise ValueError(_SECRET)
+        raise ValueError(SECRET)
 
     monkeypatch.setattr(ext_authz, "build_request", broken)
 
@@ -202,7 +240,7 @@ _FAILURES = {
     "building-the-request": (AllowAll(), _break_building),
     "the-judge-raising": (_Raising(), lambda _monkeypatch: None),
     "the-judge-raising-on-the-body": (
-        _BodyJudge(raises=True),
+        BodyJudge(raises=True),
         lambda _monkeypatch: None,
     ),
 }
@@ -210,34 +248,30 @@ _FAILURES = {
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("failure", list(_FAILURES))
-async def test_a_judge_failure_is_refused_by_default(monkeypatch, caplog, failure):
-    """Q3, not D13: a request that breaks the judging is never forwarded
-    unjudged. The log names the failure, never a header value."""
-    judge, arrange = _FAILURES[failure]
-    arrange(monkeypatch)
-
-    with caplog.at_level("DEBUG"):
-        response = await _check(monkeypatch, judge, Deny(), {"authorization": _SECRET})
-
-    _assert_denied(response)
-    assert "refusing it" in caplog.text
-    assert "agent-secret" not in caplog.text
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("failure", list(_FAILURES))
-async def test_a_judge_failure_is_forwarded_when_the_setting_allows(
-    monkeypatch, caplog, failure
+@pytest.mark.parametrize(
+    ("on_failure", "assert_answered", "action"),
+    [
+        (Deny(), assert_check_denied, "refusing it"),
+        (Allow(), _assert_forwarded_with_the_ticket, "forwarding it unjudged"),
+    ],
+    ids=["refused-by-default", "forwarded-when-the-setting-allows"],
+)
+async def test_a_judge_failure_follows_the_setting(
+    monkeypatch, caplog, failure, on_failure, assert_answered, action
 ):
-    """Forwarded as an allowed request: decided on, with the x-rail headers."""
+    """A request that breaks the judging is never forwarded unjudged unless
+    the setting says so, and then as an allowed one: decided on, with the
+    x-rail headers. The log names the failure, never a header value."""
     judge, arrange = _FAILURES[failure]
     arrange(monkeypatch)
 
     with caplog.at_level("DEBUG"):
-        response = await _check(monkeypatch, judge, Allow(), {"authorization": _SECRET})
+        response = await _check(
+            monkeypatch, judge, on_failure, {"authorization": SECRET}
+        )
 
-    _assert_forwarded_with_the_ticket(response)
-    assert "forwarding it unjudged" in caplog.text
+    assert_answered(response)
+    assert action in caplog.text
     assert "agent-secret" not in caplog.text
 
 
@@ -267,7 +301,7 @@ def _with_body(
     ("body", "allowed"), [(b'{"ok":1}', True), (b'{"deny":1}', False)]
 )
 async def test_the_judge_reads_a_body_sent_as_bytes(monkeypatch, caplog, body, allowed):
-    judge = _BodyJudge()
+    judge = BodyJudge()
     request = _with_body(raw=body, partial="false", length=len(body))
 
     with caplog.at_level("INFO"):
@@ -278,14 +312,14 @@ async def test_the_judge_reads_a_body_sent_as_bytes(monkeypatch, caplog, body, a
         _assert_forwarded_with_the_ticket(response)
         assert "refusing" not in caplog.text
     else:
-        _assert_denied(response)
+        assert_check_denied(response)
         assert "judged on its body" in caplog.text
         assert body.decode() not in caplog.text
 
 
 @pytest.mark.asyncio
 async def test_a_request_without_a_body_is_judged_with_an_empty_one(monkeypatch):
-    judge = _BodyJudge()
+    judge = BodyJudge()
 
     response = await _servicer(monkeypatch, judge).Check(
         _with_body(partial=None, length=None), None
@@ -311,7 +345,7 @@ async def test_a_request_without_a_body_is_judged_with_an_empty_one(monkeypatch)
 async def test_a_body_that_cannot_be_judged_is_refused(
     monkeypatch, caplog, request_, reason
 ):
-    judge = _BodyJudge()
+    judge = BodyJudge()
     servicer = _servicer(
         monkeypatch, judge, limits=BodyLimits(max_bytes=4, budget_bytes=4)
     )
@@ -319,13 +353,13 @@ async def test_a_body_that_cannot_be_judged_is_refused(
     response = await servicer.Check(request_, None)
 
     assert judge.bodies == []
-    _assert_denied(response)
+    assert_check_denied(response)
     assert f"cannot judge a request's body ({reason}); refusing it" in caplog.text
 
 
 @pytest.mark.asyncio
 async def test_a_body_not_packed_as_bytes_is_warned_about_once(monkeypatch, caplog):
-    servicer = _servicer(monkeypatch, _BodyJudge())
+    servicer = _servicer(monkeypatch, BodyJudge())
     request = _with_body(text="abc", partial="false", length=3)
 
     await servicer.Check(request, None)
@@ -337,7 +371,7 @@ async def test_a_body_not_packed_as_bytes_is_warned_about_once(monkeypatch, capl
 @pytest.mark.asyncio
 async def test_the_budget_is_given_back_once_a_body_is_judged(monkeypatch):
     servicer = _servicer(
-        monkeypatch, _BodyJudge(), limits=BodyLimits(max_bytes=4, budget_bytes=4)
+        monkeypatch, BodyJudge(), limits=BodyLimits(max_bytes=4, budget_bytes=4)
     )
     request = _with_body(raw=b"1234", partial="false", length=4)
 
@@ -346,181 +380,3 @@ async def test_the_budget_is_given_back_once_a_body_is_judged(monkeypatch):
 
     _assert_forwarded_with_the_ticket(first)
     _assert_forwarded_with_the_ticket(second)
-
-
-@pytest.fixture
-def socket_path():
-    # A unix socket path is limited to about 100 bytes, which pytest's own
-    # tmp_path can exceed.
-    with tempfile.TemporaryDirectory(prefix="rail-") as directory:
-        yield Path(directory) / "ext.sock"
-
-
-@pytest.mark.asyncio
-async def test_a_body_past_grpc_s_default_message_size_is_received(
-    monkeypatch, socket_path
-):
-    """gRPC refuses a message over 4 MiB by default; the server takes one
-    as large as the cap and its headers."""
-    judge = _BodyJudge()
-    body = b"x" * (5 * 1024 * 1024)
-    srv = await server._start_server(
-        wound_holder(ticket="the-ticket"),
-        True,
-        _protected(monkeypatch),
-        socket_path,
-        pipeline.Judging(judge=judge),
-    )
-    try:
-        async with grpc.aio.insecure_channel(f"unix:{socket_path}") as channel:
-            response = await external_auth_pb2_grpc.AuthorizationStub(channel).Check(
-                _with_body(raw=body, partial="false", length=len(body))
-            )
-    finally:
-        await srv.stop(None)
-
-    assert judge.bodies == [body]
-    _assert_forwarded_with_the_ticket(response)
-
-
-def _gzipped_request(data: bytes) -> external_auth_pb2.CheckRequest:
-    body = gzip.compress(data)
-    return _with_body(
-        raw=body,
-        partial="false",
-        length=len(body),
-        headers={"content-encoding": "gzip", "content-type": "application/json"},
-    )
-
-
-@pytest.mark.asyncio
-async def test_the_judge_sees_the_body_decoded_and_parsed(monkeypatch):
-    seen = []
-
-    class Recording(_BodyJudge):
-        def judge_body(self, request, body):
-            seen.append(body)
-            return Allow()
-
-    await _servicer(monkeypatch, Recording()).Check(
-        _gzipped_request(b'{"method": "tools/call"}'), None
-    )
-
-    [view] = seen
-    assert view.json == {"method": "tools/call"}
-
-
-@pytest.mark.asyncio
-async def test_a_zip_bomb_is_refused_at_the_cap(monkeypatch, caplog):
-    judge = _BodyJudge()
-    servicer = _servicer(
-        monkeypatch, judge, limits=BodyLimits(max_bytes=65536, budget_bytes=65536)
-    )
-    request = _gzipped_request(b"\x00" * 10_000_000)
-    assert len(request.attributes.request.http.raw_body) < 65536
-
-    response = await servicer.Check(request, None)
-
-    assert judge.bodies == []
-    _assert_denied(response)
-    assert "(decoded-too-large); refusing it" in caplog.text
-
-
-@pytest.mark.asyncio
-async def test_a_reason_the_policy_allows_is_forwarded_unjudged(monkeypatch, caplog):
-    judge = _BodyJudge()
-    servicer = _servicer(monkeypatch, judge, body_policy=BodyPolicy([Reason.TRUNCATED]))
-
-    response = await servicer.Check(
-        _with_body(raw=b"start", partial="true", length=100), None
-    )
-
-    assert judge.bodies == []
-    _assert_forwarded_with_the_ticket(response)
-    assert "(truncated); forwarding it unjudged" in caplog.text
-
-
-@pytest.mark.asyncio
-async def test_a_slow_judgement_is_cut_short_without_stalling_other_calls(
-    monkeypatch, caplog
-):
-    """Judged in a worker thread, so the event loop answers other calls
-    meanwhile, and refused as `timed-out` once the time budget runs out."""
-    finished: list[str] = []
-
-    class Slow(_BodyJudge):
-        def judge_body(self, request, body):
-            time.sleep(0.5)
-            return Allow()
-
-    slow = _servicer(monkeypatch, Slow(), body_timeout=0.1)
-    quick = _servicer(monkeypatch, AllowAll())
-
-    async def call(name, servicer, request):
-        response = await servicer.Check(request, None)
-        finished.append(name)
-        return response
-
-    started = time.monotonic()
-    slow_response, _ = await asyncio.gather(
-        call("slow", slow, _with_body(raw=b"x", partial="false", length=1)),
-        call("quick", quick, _check_request({})),
-    )
-    elapsed = time.monotonic() - started
-
-    assert finished == ["quick", "slow"]
-    assert elapsed < 0.4
-    _assert_denied(slow_response)
-    assert "(timed-out); refusing it" in caplog.text
-
-
-@pytest.mark.asyncio
-async def test_a_timed_out_body_holds_the_budget_until_its_thread_ends(
-    monkeypatch, caplog
-):
-    """A thread can't be stopped, so one whose verdict came too late keeps
-    the body's bytes until it ends, and only then gives them back."""
-    release = threading.Event()
-
-    class Stuck(_BodyJudge):
-        def judge_body(self, request, body):
-            release.wait(5)
-            return Allow()
-
-    servicer = _servicer(
-        monkeypatch,
-        Stuck(),
-        limits=BodyLimits(max_bytes=4, budget_bytes=4),
-        body_timeout=0.05,
-    )
-    request = _with_body(raw=b"1234", partial="false", length=4)
-
-    _assert_denied(await servicer.Check(request, None))
-    assert "(timed-out); refusing it" in caplog.text
-    _assert_denied(await servicer.Check(request, None))
-    assert "(over-budget); refusing it" in caplog.text
-
-    release.set()
-    budget = servicer._pipeline._budget
-    for _ in range(100):
-        if budget.held_bytes == 0:
-            break
-        await asyncio.sleep(0.01)
-    assert budget.held_bytes == 0
-
-
-@pytest.mark.asyncio
-async def test_a_body_past_its_deadline_is_never_judged(monkeypatch, caplog):
-    """Work whose wait has ended stops at its next step."""
-    judge = _BodyJudge()
-    servicer = _servicer(monkeypatch, judge, body_timeout=0.05)
-    # The deadline passes once the view is built, before the judge runs.
-    monkeypatch.setattr(pipeline, "is_past", lambda deadline: True)
-
-    response = await servicer.Check(
-        _with_body(raw=b"{}", partial="false", length=2), None
-    )
-
-    _assert_denied(response)
-    assert judge.bodies == []
-    assert "(timed-out); refusing it" in caplog.text
