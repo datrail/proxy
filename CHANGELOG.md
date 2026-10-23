@@ -83,3 +83,10 @@ and, from the first release that has it, `ghcr.io/datrail/proxy-envoy-grpc`.
   `RAIL_PLUGIN_ENABLED` as what to set instead; left empty it is ignored.
   Upgrading from `v0.1.0` means replacing the variable rather than dropping it,
   since the proxy attaches nothing until `RAIL_PLUGIN_ENABLED=true` says so.
+
+### Security
+
+- Both images ship certifi 2026.10.19, which drops the "emSign ECC Root CA -
+  G3" root, an issuer of intermediates whose keys were compromised.
+  `ghcr.io/datrail/proxy` ships opentelemetry-api 1.45.1, which bounds how much
+  of a `tracestate` header it parses; `proxy-envoy-grpc` doesn't include it.
