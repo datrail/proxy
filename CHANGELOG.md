@@ -90,3 +90,8 @@ and, from the first release that has it, `ghcr.io/datrail/proxy-envoy-grpc`.
   G3" root, an issuer of intermediates whose keys were compromised.
   `ghcr.io/datrail/proxy` ships opentelemetry-api 1.45.1, which bounds how much
   of a `tracestate` header it parses; `proxy-envoy-grpc` doesn't include it.
+- `ghcr.io/datrail/proxy` ships fastmcp 3.4.10, which re-checks a component's
+  authorization after a transform
+  ([GHSA-7xgj-8392-5q4r](https://github.com/advisories/GHSA-7xgj-8392-5q4r)).
+  The proxy sets no fastmcp component authorization. `proxy-envoy-grpc` doesn't
+  include fastmcp.

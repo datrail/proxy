@@ -6,7 +6,7 @@ requires-python = ">=3.12"
 # Packages imported directly are listed, even those fastmcp already brings.
 dependencies = [
     "proxy-core",
-    "fastmcp==3.4.6",
+    "fastmcp==3.4.10",
     # [standard] brings uvloop and httptools: the event loop and HTTP parser the image runs.
     "uvicorn[standard]==0.52.1",
     "starlette==1.4.1",
