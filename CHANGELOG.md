@@ -95,3 +95,11 @@ and, from the first release that has it, `ghcr.io/datrail/proxy-envoy-grpc`.
   ([GHSA-7xgj-8392-5q4r](https://github.com/advisories/GHSA-7xgj-8392-5q4r)).
   The proxy sets no fastmcp component authorization. `proxy-envoy-grpc` doesn't
   include fastmcp.
+- `ghcr.io/datrail/proxy` ships authlib 1.9.1, joserfc 1.7.7 and dnspython
+  2.9.0, which fix JWS/JWT signature forgery and a DNS-name parsing slowdown,
+  among others
+  ([GHSA-6v38-4h7w-rj9h](https://github.com/advisories/GHSA-6v38-4h7w-rj9h),
+  [GHSA-8m4g-j4wp-wgcg](https://github.com/advisories/GHSA-8m4g-j4wp-wgcg),
+  [GHSA-45c3-73f7-pv4m](https://github.com/advisories/GHSA-45c3-73f7-pv4m)).
+  They reach the image only through fastmcp, and the proxy configures none of
+  fastmcp's OAuth or JWT verification. `proxy-envoy-grpc` doesn't include them.
