@@ -1,5 +1,11 @@
 # DatRail Proxy
 
+> This repository is replaced by
+> [datrail/railguard](https://github.com/datrail/railguard), is no longer
+> developed and will be archived. `proxy-envoy-grpc` is replaced by
+> `railguard-envoy` (`ghcr.io/datrail/railguard-envoy`, `rail proxy`).
+> `proxy-standalone` is retired with this repository, with no replacement.
+
 DatRail Proxy is the injection point in the open-source DatRail request path.
 It stands between an AI agent and its MCP servers, fetches an `x-rail` ticket
 for the configured host and sandbox, and attaches that ticket to forwarded
